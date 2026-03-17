@@ -1,0 +1,125 @@
+---
+title: "Sessions"
+description: "Reserve and release hardware sessions for device access."
+---
+
+Sessions give an agent exclusive access to a device. A device can only have one active session at a time. Always stop a session when finished to free the device for other agents.
+
+<Warning>
+  You must call `POST /v1/sessions/{session_id}/stop` when finished, on both success and failure paths. Leaving sessions open blocks other agents from accessing the device.
+</Warning>
+
+---
+
+## POST /v1/requests
+
+Allocates an exclusive session on a device. You must provide at least one of `capability` or `device_id`.
+
+### Authentication
+
+`Authorization: Bearer <agent_api_key>`
+
+### Headers
+
+<ParamField header="x-agent-id" type="string">
+  Stable agent or owner identifier used for access policy enforcement.
+</ParamField>
+
+<ParamField header="x-agent-org-id" type="string">
+  Organisation the agent belongs to, used for org-level access policy.
+</ParamField>
+
+<ParamField header="x-agent-roles" type="string">
+  Comma-separated list of agent roles (self-asserted).
+</ParamField>
+
+### Request body
+
+<ParamField body="capability" type="string">
+  Required if `device_id` is omitted. The cloud will find an available device that supports this capability.
+
+  Example: `camera.capture`
+</ParamField>
+
+<ParamField body="device_id" type="string">
+  Target a specific device by ID. Required if `capability` is omitted.
+</ParamField>
+
+<ParamField body="node_id" type="string">
+  Restrict the session to a specific hardware node. Requires `device_id`.
+</ParamField>
+
+### Response — 200
+
+<ResponseField name="session_id" type="string" required>
+  Opaque session identifier. Pass this to all subsequent execution and stop calls.
+
+  Example: `sess-3f7a2c1d-...`
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Always `accepted` on success.
+</ResponseField>
+
+### Error responses
+
+| Status | Meaning |
+|--------|----------|
+| 400 | Missing or invalid request parameters. |
+| 401 | Missing or invalid agent API key. |
+| 403 | Agent identity does not have access to this device. |
+| 404 | No matching available hardware found. |
+
+### Example
+
+```bash
+curl -X POST "https://oahl.onrender.com/v1/requests" \
+  -H "Authorization: Bearer <agent_api_key>" \
+  -H "x-agent-id: agent-abc123" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "capability": "camera.capture"
+  }'
+```
+
+```json
+{
+  "session_id": "sess-3f7a2c1d-8b2e-4c7f-a1d9-0e5f6c3b2a1d",
+  "status": "accepted"
+}
+```
+
+---
+
+## POST /v1/sessions/{session_id}/stop
+
+Releases an active session and frees the device for other agents.
+
+### Authentication
+
+`Authorization: Bearer <agent_api_key>`
+
+### Path parameters
+
+<ParamField path="session_id" type="string" required>
+  Opaque session identifier returned by `POST /v1/requests`.
+</ParamField>
+
+### Response — 200
+
+<ResponseField name="status" type="string">
+  Always `stopped` on success.
+</ResponseField>
+
+### Example
+
+```bash
+curl -X POST "https://oahl.onrender.com/v1/sessions/sess-3f7a2c1d-8b2e-4c7f-a1d9-0e5f6c3b2a1d/stop" \
+  -H "Authorization: Bearer <agent_api_key>"
+```
+
+```json
+{
+  "status": "stopped"
+}
+```

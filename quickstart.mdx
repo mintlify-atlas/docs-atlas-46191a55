@@ -1,80 +1,156 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Connect your first hardware device to the OAHL network in minutes."
 ---
 
-## Get started in three steps
+This guide walks you through installing the OAHL CLI, initializing your node configuration, and starting a running node that agents can reach.
 
-Get your documentation site running locally and make your first customization.
+<Steps>
+  <Step title="Install the CLI">
+    Install the OAHL toolkit globally via npm:
 
-### Step 1: Set up your local environment
+    ```bash
+    npm install -g @fredabila/oahl
+    ```
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    This installs the `oahl` command, which includes the setup wizard, TUI config editor, adapter manager, and the node start command.
 
-### Step 2: Deploy your changes
+    <Note>
+      Node.js 18 or later is required. Run `node --version` to check.
+    </Note>
+  </Step>
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+  <Step title="Run the setup wizard">
+    Run the interactive setup wizard to generate your `oahl-config.json`:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    ```bash
+    oahl init
+    ```
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    The wizard prompts you for:
 
-### Step 3: Go live
+    - A unique **node ID** (e.g. `my-laptop-01`)
+    - Your **provider name** (e.g. `Accra Test Lab`)
+    - The **type of hardware** you are connecting first (USB camera, RTL-SDR, mock sensor, or skip)
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    When finished, `oahl-config.json` is written to the current directory. The generated file looks like this:
+
+    ```json
+    {
+      "node_id": "my-laptop-01",
+      "cloud_url": "https://oahl.onrender.com",
+      "provider_api_key": "123456",
+      "plugins": [
+        "@oahl/adapter-mock",
+        "@oahl/adapter-usb-camera"
+      ],
+      "provider": {
+        "name": "My Personal Test Node"
+      },
+      "devices": [
+        {
+          "id": "usb-cam-1",
+          "type": "camera",
+          "adapter": "usb-camera",
+          "capabilities": ["camera.capture"]
+        }
+      ]
+    }
+    ```
+
+    <Tip>
+      To run your node completely offline without registering with the Cloud Registry, set `"cloud_url": ""` in `oahl-config.json`. The node will still start and local agents can reach it on your LAN.
+    </Tip>
+  </Step>
+
+  <Step title="Detect connected hardware">
+    Before starting the node, scan for connected USB and serial devices to confirm OAHL can see your hardware:
+
+    ```bash
+    oahl scan-ports
+    ```
+
+    The command identifies connected devices, suggests the matching adapter package, and prints a config snippet you can paste into `oahl-config.json`:
+
+    ```
+    1. [USB] USB Video Device
+       id: /dev/video0
+       status: present
+       suggested adapter: @oahl/adapter-usb-camera
+       suggested type: camera
+       capability hints: camera.capture
+    ```
+
+    For scripting or CI, use the `--json` flag to get machine-readable output:
+
+    ```bash
+    oahl scan-ports --json
+    ```
+  </Step>
+
+  <Step title="Start your node">
+    <CodeGroup>
+
+    ```bash npm (recommended)
+    oahl start
+    ```
+
+    ```bash Docker
+    docker run -d \
+      --name oahl-node \
+      -p 8080:8080 \
+      -v $(pwd)/oahl-config.json:/app/oahl-config.json \
+      --device=/dev/video0 \
+      oahl/node:latest
+    ```
+
+    </CodeGroup>
+
+    When the node starts successfully, it:
+
+    1. Loads `oahl-config.json` and initializes all adapter plugins
+    2. Starts the local HTTP server (default port `3000`)
+    3. Registers with the Cloud Registry at the configured `cloud_url`
+
+    <Warning>
+      Some adapters (especially serial and BLE) require native C++ bindings. If `oahl start` fails with a build error, use the Docker option — the container ships with all build tools pre-installed.
+    </Warning>
+  </Step>
+
+  <Step title="Verify the node is healthy">
+    With the node running, confirm it is accepting requests:
+
+    ```bash
+    curl http://localhost:3000/health
+    ```
+
+    A healthy node responds with:
+
+    ```json
+    { "status": "ok" }
+    ```
+
+    You can also list the capabilities your node is advertising:
+
+    ```bash
+    curl http://localhost:3000/v1/capabilities
+    ```
+  </Step>
+</Steps>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Learn how nodes, adapters, the policy engine, and the cloud registry fit together
+  </Card>
+  <Card title="Adapter guide" icon="plug" href="/adapters/overview">
+    Install a community adapter or scaffold your own with `oahl create-adapter`
+  </Card>
+  <Card title="Agent integration" icon="robot" href="/agents/overview">
+    Use the JavaScript or Python SDK to give your AI agent access to hardware
+  </Card>
+  <Card title="Security and policies" icon="shield" href="/security">
+    Configure per-device access policies, session limits, and agent allow-lists
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

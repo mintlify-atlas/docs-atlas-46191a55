@@ -1,0 +1,302 @@
+---
+title: "Direct API Integration"
+description: "Integrate AI agents with OAHL hardware using raw HTTP calls against the Cloud REST API."
+---
+
+The Direct API pattern gives you complete control over requests with no SDK dependency. Every operation is a standard HTTP call to `https://oahl.onrender.com`.
+
+## Authentication
+
+All requests require a bearer token and `Content-Type` header:
+
+```http
+Authorization: Bearer <agent_api_key>
+Content-Type: application/json
+```
+
+Optionally include agent identity headers for access-policy enforcement:
+
+```http
+x-agent-id: my-agent-id
+x-agent-org-id: my-org-id
+x-agent-roles: hardware-reader,executor
+```
+
+## Endpoints
+
+### Discover capabilities
+
+`GET /v1/capabilities` returns all devices and their capabilities that are visible to your agent key.
+
+```bash
+curl https://oahl.onrender.com/v1/capabilities \
+  -H "Authorization: Bearer $OAHL_AGENT_API_KEY"
+```
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `q` | string | Free-text search across device ID, type, provider, and capability names |
+| `type` | string | Filter by device type (e.g. `camera`, `sensor`, `radio`, `mobile`) |
+| `provider` | string | Filter by provider name |
+| `node_id` | string | Restrict results to a specific hardware node |
+| `capability` | string | Filter to devices that expose a specific capability (partial match) |
+| `page` | integer | Page number, 1-indexed (default: `1`) |
+| `page_size` | integer | Results per page, max 100 (default: `25`) |
+
+```bash
+# Filter to cameras that support capture, page 1
+curl "https://oahl.onrender.com/v1/capabilities?type=camera&capability=camera.capture&page=1&page_size=10" \
+  -H "Authorization: Bearer $OAHL_AGENT_API_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "timestamp": 1742205600000,
+  "devices": [
+    {
+      "id": "cam-01",
+      "type": "camera",
+      "provider": "acme-labs",
+      "node_id": "node-accra-1",
+      "status": "available",
+      "capabilities": [
+        {
+          "name": "camera.capture",
+          "description": "Capture a still image from the camera",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "resolution": { "type": "string", "enum": ["720p", "1080p"] },
+              "format": { "type": "string", "enum": ["jpg", "png"] }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "page_size": 10,
+    "total": 1,
+    "total_pages": 1,
+    "has_next": false,
+    "has_prev": false
+  },
+  "filters": { "type": "camera", "capability": "camera.capture" }
+}
+```
+
+### Request a session
+
+`POST /v1/requests` allocates an exclusive session on a device. Sessions are exclusive — only one active session per device at a time.
+
+**Request by device ID (deterministic, recommended):**
+
+```bash
+curl -X POST https://oahl.onrender.com/v1/requests \
+  -H "Authorization: Bearer $OAHL_AGENT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"device_id": "cam-01", "capability": "camera.capture"}'
+```
+
+**Request by capability only (auto-assign):**
+
+```bash
+curl -X POST https://oahl.onrender.com/v1/requests \
+  -H "Authorization: Bearer $OAHL_AGENT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"capability": "camera.capture"}'
+```
+
+**Request body fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `capability` | string | Required if `device_id` is omitted. Cloud auto-assigns a device that supports this capability. |
+| `device_id` | string | Target a specific device by ID. |
+| `node_id` | string | Pin to a specific node (requires `device_id`). |
+
+**Response:**
+
+```json
+{
+  "session_id": "sess-3f7a2c1d-abcd",
+  "status": "accepted"
+}
+```
+
+### Execute a capability
+
+`POST /v1/sessions/{session_id}/execute` relays a command to the hardware node synchronously. The relay mode (WebSocket fast-path or HTTP long-poll fallback) is transparent to the caller.
+
+```bash
+curl -X POST https://oahl.onrender.com/v1/sessions/sess-3f7a2c1d-abcd/execute \
+  -H "Authorization: Bearer $OAHL_AGENT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "capability": "camera.capture",
+    "params": { "resolution": "1080p", "format": "jpg" },
+    "timeout_ms": 30000
+  }'
+```
+
+**Request body fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `capability` | string | **Required.** Capability name, e.g. `camera.capture`. |
+| `params` | object | Arguments validated against the capability's JSON Schema. |
+| `timeout_ms` | integer | Override the default relay timeout in milliseconds, e.g. `30000`. |
+
+**Response** — execution result envelope:
+
+```json
+{
+  "schema_version": "1.0",
+  "operation_id": "cmd-3a7f92bc-1234",
+  "status": "success",
+  "completion": { "done": true, "state": "completed" },
+  "capability": "camera.capture",
+  "device_id": "cam-01",
+  "timestamp": "2026-03-17T10:00:00.000Z",
+  "data": { "image_url": "https://storage.example.com/img/abc123.jpg" },
+  "meta": { "relay_latency_ms": 214, "adapter_id": "camera-v2" }
+}
+```
+
+Response headers report the relay path:
+- `x-oahl-relay-mode`: `websocket`, `websocket-late`, or `polling`
+- `x-oahl-request-id`: unique ID for this relay operation
+
+### Execute a batch
+
+`POST /v1/sessions/{session_id}/execute-batch` sends multiple commands sequentially in a single relay call, reducing round-trip overhead. The batch stops on the first error.
+
+```bash
+curl -X POST https://oahl.onrender.com/v1/sessions/sess-3f7a2c1d-abcd/execute-batch \
+  -H "Authorization: Bearer $OAHL_AGENT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "commands": [
+      { "capability": "arm.move", "params": { "x": 10, "y": 0, "z": 5 } },
+      { "capability": "arm.close", "params": {} }
+    ],
+    "timeout_ms": 120000
+  }'
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `commands` | array | **Required.** Ordered list of `{ capability, params }` objects. |
+| `timeout_ms` | integer | Total timeout for the entire batch in milliseconds. |
+
+### Stop a session
+
+`POST /v1/sessions/{session_id}/stop` releases the device. Call this on every exit path — success or failure.
+
+```bash
+curl -X POST https://oahl.onrender.com/v1/sessions/sess-3f7a2c1d-abcd/stop \
+  -H "Authorization: Bearer $OAHL_AGENT_API_KEY"
+```
+
+**Response:**
+
+```json
+{ "status": "stopped" }
+```
+
+## Complete end-to-end example
+
+Capture an image from a remote camera:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+BASE="https://oahl.onrender.com"
+AUTH="Authorization: Bearer $OAHL_AGENT_API_KEY"
+
+# 1. Discover a camera that supports capture
+DEVICE_ID=$(curl -sf "$BASE/v1/capabilities?type=camera&capability=camera.capture" \
+  -H "$AUTH" | jq -r '.devices[0].id')
+
+echo "Using device: $DEVICE_ID"
+
+# 2. Reserve a session
+SESSION_ID=$(curl -sf -X POST "$BASE/v1/requests" \
+  -H "$AUTH" -H "Content-Type: application/json" \
+  -d "{\"device_id\": \"$DEVICE_ID\", \"capability\": \"camera.capture\"}" \
+  | jq -r '.session_id')
+
+echo "Session: $SESSION_ID"
+
+# 3. Execute — always stop even on failure
+trap 'curl -sf -X POST "$BASE/v1/sessions/$SESSION_ID/stop" -H "$AUTH" > /dev/null' EXIT
+
+RESULT=$(curl -sf -X POST "$BASE/v1/sessions/$SESSION_ID/execute" \
+  -H "$AUTH" -H "Content-Type: application/json" \
+  -d '{"capability": "camera.capture", "params": {"resolution": "1080p", "format": "jpg"}, "timeout_ms": 30000}')
+
+echo "$RESULT" | jq '.data'
+```
+
+## Tool wrapper pattern for LLM agents
+
+Wrap the lifecycle into a single callable function so LLM agents never see raw session management:
+
+```python
+import requests
+
+BASE = "https://oahl.onrender.com"
+
+def capture_remote_image(agent_api_key: str, region: str = "us", resolution: str = "1080p") -> dict:
+    headers = {
+        "Authorization": f"Bearer {agent_api_key}",
+        "Content-Type": "application/json"
+    }
+
+    # 1. Request session — auto-assign a camera supporting capture
+    req = requests.post(f"{BASE}/v1/requests", headers=headers, json={
+        "capability": "camera.capture",
+        "constraints": {"region": region},
+        "params": {"resolution": resolution, "format": "jpg"}
+    })
+    req.raise_for_status()
+    session_id = req.json()["session_id"]
+
+    try:
+        # 2. Execute the capability
+        result = requests.post(
+            f"{BASE}/v1/sessions/{session_id}/execute",
+            headers=headers,
+            json={
+                "capability": "camera.capture",
+                "params": {"resolution": resolution, "format": "jpg"},
+                "timeout_ms": 120000
+            }
+        )
+        result.raise_for_status()
+        return result.json()
+    finally:
+        # 3. Always release the session
+        requests.post(f"{BASE}/v1/sessions/{session_id}/stop", headers=headers)
+```
+
+## Error handling
+
+| Status | Meaning | Recovery |
+|---|---|---|
+| `401` | Missing or invalid agent API key | Stop; surface an authorization error |
+| `400` | Invalid request body or unsupported capability params | Re-check payload and capability schema; correct and retry once |
+| `403` | Agent identity does not have access to this device | Try a different device or contact the device owner |
+| `404` on `/v1/requests` | No matching available hardware found | Broaden discovery filters; present alternatives |
+| `404` on `/v1/sessions/…` | Session not found or expired | Re-request a new session |
+| `504` | Hardware node did not respond within timeout | Stop session; offer to retry |
+| `status: "error"` in body | Hardware execution failure | Inspect `error.agent_recovery_hints` for natural-language fix instructions; retry within the hinted bounds |
+
+<Warning>
+  Do not perform unlimited retries. Always bound retries explicitly and call `stop` on every failure path to release the hardware.
+</Warning>

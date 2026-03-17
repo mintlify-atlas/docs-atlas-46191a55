@@ -1,0 +1,178 @@
+---
+title: "Access Policies"
+description: "Control which agents can discover and operate your hardware devices using device access policies and the local Policy Engine."
+---
+
+OAHL provides two complementary policy layers for controlling hardware access:
+
+- **Device access policy** — enforced by the cloud relay. Controls which agents can discover and open sessions on a device based on visibility mode and allow/deny lists.
+- **Policy Engine** — enforced by the local node. Controls which capabilities an agent can invoke on a device, regardless of cloud-level access.
+
+## Device access policy
+
+Every device registered with OAHL can carry an `access_policy` object. The cloud enforces this policy on `GET /v1/capabilities` (discovery) and `POST /v1/requests` (session reservation). If a policy check fails, the agent receives HTTP 403.
+
+### Fields
+
+<ParamField body="visibility" type="string" required>
+  Controls the baseline access level for the device.
+
+  - `public` — any authenticated agent (valid bearer token) may discover and access the device.
+  - `shared` — only agents whose ID appears in `allowed_agents` or whose organization appears in `allowed_orgs` may access. All others are denied.
+  - `private` — only the device owner may access. The `allowed_agents` and `allowed_orgs` lists are ignored.
+</ParamField>
+
+<ParamField body="allowed_agents" type="string[]">
+  List of agent IDs permitted to access this device. Only evaluated when `visibility` is `shared`. Each entry must match the value the agent sends in the `x-agent-id` request header.
+</ParamField>
+
+<ParamField body="allowed_orgs" type="string[]">
+  List of organization IDs whose members may access this device. Only evaluated when `visibility` is `shared`. Matched against the `x-agent-org-id` request header.
+</ParamField>
+
+<ParamField body="denied_agents" type="string[]">
+  Agent IDs explicitly blocked from accessing this device. The deny list is evaluated before the allow list — a denied agent is rejected even if their ID also appears in `allowed_agents`.
+</ParamField>
+
+### Configuration examples
+
+**Public device** — any authenticated agent can access:
+
+```json oahl-config.json
+{
+  "devices": [
+    {
+      "id": "cam-front-01",
+      "type": "camera",
+      "adapter": "usb-camera",
+      "access_policy": {
+        "visibility": "public"
+      }
+    }
+  ]
+}
+```
+
+**Shared device** — only specific agents and one organization:
+
+```json oahl-config.json
+{
+  "devices": [
+    {
+      "id": "sdr-rooftop-01",
+      "type": "radio",
+      "adapter": "rtl-sdr",
+      "access_policy": {
+        "visibility": "shared",
+        "allowed_agents": ["agent-abc123", "agent-def456"],
+        "allowed_orgs": ["org-acme"],
+        "denied_agents": ["agent-blocked789"]
+      }
+    }
+  ]
+}
+```
+
+**Private device** — owner access only:
+
+```json oahl-config.json
+{
+  "devices": [
+    {
+      "id": "arduino-lab-01",
+      "type": "serial",
+      "adapter": "custom",
+      "access_policy": {
+        "visibility": "private"
+      }
+    }
+  ]
+}
+```
+
+## Policy Engine (local node)
+
+The `PolicyEngine` in `@oahl/core` provides a second enforcement layer on the hardware node itself. Policies are defined per device in the `policies` array of `oahl-config.json` and are checked before any adapter executes a capability.
+
+This layer is independent of the cloud. Even if an agent holds a valid session, it cannot invoke a capability that the local policy blocks.
+
+### How it works
+
+The `PolicyEngine.isCapabilityAllowed(deviceId, capabilityName)` method applies the following logic in order:
+
+1. If no policy is registered for the device, all capabilities are permitted.
+2. If the requested capability appears in `disabledCapabilities`, it is **denied**.
+3. If `allowedCapabilities` is non-empty and the requested capability is **not** in that list, it is **denied**.
+4. Otherwise, the capability is **permitted**.
+
+Capability names are normalized (trimmed, lowercased) before comparison.
+
+### Fields
+
+<ParamField body="deviceId" type="string" required>
+  The device ID this policy applies to. Must match the `id` field of the device in the `devices` array.
+</ParamField>
+
+<ParamField body="allowedCapabilities" type="string[]">
+  Explicit allow-list of capability names. When this list is non-empty, only listed capabilities can be invoked. An empty or omitted list means all capabilities are allowed (subject to `disabledCapabilities`).
+</ParamField>
+
+<ParamField body="disabledCapabilities" type="string[]">
+  Explicit deny-list of capability names. These capabilities are always blocked, even if they also appear in `allowedCapabilities`.
+</ParamField>
+
+<ParamField body="maxDurationMs" type="number">
+  Maximum session duration in milliseconds. Sessions that exceed this limit are forcibly terminated.
+</ParamField>
+
+### Configuration example
+
+```json oahl-config.json
+{
+  "policies": [
+    {
+      "deviceId": "cam-front-01",
+      "maxDurationMs": 300000,
+      "allowedCapabilities": ["camera.capture", "camera.stream"],
+      "disabledCapabilities": []
+    },
+    {
+      "deviceId": "arduino-lab-01",
+      "maxDurationMs": 60000,
+      "allowedCapabilities": [],
+      "disabledCapabilities": ["hardware.reset", "hardware.flash"]
+    }
+  ]
+}
+```
+
+In the example above:
+- `cam-front-01` permits only `camera.capture` and `camera.stream`. Any other capability is denied.
+- `arduino-lab-01` permits all capabilities except `hardware.reset` and `hardware.flash`, which are administratively disabled to prevent physical damage.
+
+## Agent identity headers
+
+The cloud uses three optional request headers to resolve agent identity for access policy evaluation:
+
+| Header | Description |
+|---|---|
+| `x-agent-id` | Stable identifier for the calling agent or owner. Matched against `allowed_agents` and `denied_agents`. |
+| `x-agent-org-id` | Organization the agent belongs to. Matched against `allowed_orgs`. |
+| `x-agent-roles` | Comma-separated role list. Reserved for future role-based access control. |
+
+These headers are optional. If omitted, the agent is treated as having no identity for policy purposes — meaning it will only be able to access `public` devices and will be denied from any `shared` device that requires specific agent or org membership.
+
+<Warning>
+**These headers are self-asserted in v1.** Any HTTP client can set any value for `x-agent-id` or `x-agent-org-id`. There is no cryptographic binding between the bearer token and these identity claims. See [Known Security Gaps](/security/known-gaps) for details and compensating controls.
+</Warning>
+
+### Example request with identity headers
+
+```bash
+curl -X POST https://oahl.onrender.com/v1/requests \
+  -H "Authorization: Bearer <agent_api_key>" \
+  -H "x-agent-id: agent-abc123" \
+  -H "x-agent-org-id: org-acme" \
+  -H "Content-Type: application/json" \
+  -d '{"device_id": "sdr-rooftop-01"}'
+```

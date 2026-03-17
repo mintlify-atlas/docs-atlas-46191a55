@@ -1,0 +1,157 @@
+---
+title: "Configuration reference"
+description: "Complete reference for every field in oahl-config.json."
+---
+
+The `oahl-config.json` file tells the OAHL node who you are, which hardware is attached, and what agents are allowed to do with each device. Place it in the directory where you run `oahl start` or mount it into Docker at `/app/packages/server/oahl-config.json`.
+
+## Top-level fields
+
+<ParamField path="node_id" type="string" required>
+  A unique identifier for this hardware node. Used to identify the node in the Cloud Registry and in logs. Choose something descriptive, such as `gh-lab-01` or `my-laptop-01`.
+</ParamField>
+
+<ParamField path="cloud_url" type="string">
+  URL of the OAHL Cloud Registry. When set, the node registers itself on startup and remote agents can discover your hardware globally.
+
+  Set to an empty string (`""`) or omit entirely to run in fully local/offline mode. Agents on your LAN can still reach the node at `http://localhost:3000`.
+
+  Default: `"https://oahl.onrender.com"`
+</ParamField>
+
+<ParamField path="provider_api_key" type="string">
+  API key issued by the OAHL Developer Portal. Required for cloud registration. Obtain one by running `oahl login`.
+</ParamField>
+
+<ParamField path="plugins" type="string[]">
+  List of adapter package names to load when the node starts. Each entry is an npm package name. Install packages first with `oahl install <adapter>` or `npm install <adapter>`.
+
+  Example: `["@oahl/adapter-usb-camera", "@oahl/adapter-rtl-sdr"]`
+</ParamField>
+
+## `provider` object
+
+Metadata about the hardware provider (you). Displayed in the Cloud Registry.
+
+<ParamField path="provider.name" type="string">
+  Human-readable name for your node or lab. Example: `"Accra Test Lab"`.
+</ParamField>
+
+<ParamField path="provider.owner_id" type="string">
+  Your account ID from the Developer Portal. Used to associate this node with your account. Can also be set at the top level as `owner_id`.
+</ParamField>
+
+## `devices` array
+
+Each entry in `devices` describes one physical (or virtual) device attached to this node.
+
+<ParamField path="devices[].id" type="string" required>
+  Unique identifier for the device within this node. Used in capability requests and logs. Example: `"cam-01"`.
+</ParamField>
+
+<ParamField path="devices[].type" type="string">
+  Semantic device category. Examples: `"camera"`, `"sdr"`, `"android"`, `"mock"`, `"serial-device"`, `"custom"`.
+</ParamField>
+
+<ParamField path="devices[].adapter" type="string">
+  Name of the adapter plugin that drives this device. Must match an entry in `plugins` or be a locally installed package. Examples: `"usb-camera-adapter"`, `"rtl-sdr-adapter"`, `"@oahl/adapter-android"`.
+</ParamField>
+
+<ParamField path="devices[].capabilities" type="string[]">
+  List of capability names this device exposes. These are the actions agents can request. Examples: `["camera.capture", "camera.stream"]`, `["tune", "read_samples"]`.
+</ParamField>
+
+<ParamField path="devices[].local_path" type="string">
+  Path to the device node on the host filesystem. Used by camera and serial adapters. Example: `"/dev/video0"`, `"/dev/ttyACM0"`.
+</ParamField>
+
+<ParamField path="devices[].usb_index" type="number">
+  Zero-based index for USB devices that don't use a filesystem path, such as RTL-SDR dongles. Example: `0` for the first dongle.
+</ParamField>
+
+### `policy` object
+
+Controls how a device is shared and how long sessions last.
+
+<ParamField path="devices[].policy.public" type="boolean" default="false">
+  When `true`, any agent can request a session on this device without being explicitly listed in `access_policy.allowed_agents`.
+</ParamField>
+
+<ParamField path="devices[].policy.max_session_minutes" type="number" default="30">
+  Maximum duration of a single agent session, in minutes. The node terminates the session after this limit.
+</ParamField>
+
+### `access_policy` object
+
+Fine-grained access control for the device. Takes precedence over `policy.public` for allow/deny decisions.
+
+<ParamField path="devices[].access_policy.visibility" type="string" default="private">
+  One of `"public"`, `"shared"`, or `"private"`.
+
+  - `"public"` — any agent can access the device.
+  - `"shared"` — only agents listed in `allowed_agents` or orgs listed in `allowed_orgs` can access.
+  - `"private"` — only the device owner can access.
+</ParamField>
+
+<ParamField path="devices[].access_policy.allowed_agents" type="string[]">
+  List of agent IDs explicitly allowed to access this device. Used when `visibility` is `"shared"` or `"private"`.
+</ParamField>
+
+<ParamField path="devices[].access_policy.allowed_orgs" type="string[]">
+  List of organization IDs whose agents are allowed to access this device.
+</ParamField>
+
+<ParamField path="devices[].access_policy.denied_agents" type="string[]">
+  List of agent IDs explicitly blocked from accessing this device, even if they would otherwise qualify.
+</ParamField>
+
+## Complete example
+
+The following is a real example configuration covering a USB camera, an RTL-SDR radio, and an Android phone with fine-grained access control:
+
+```json oahl-config.json
+{
+  "node_id": "my-laptop-01",
+  "cloud_url": "https://oahl.onrender.com",
+  "provider_api_key": "123456",
+  "plugins": [
+    "@oahl/adapter-mock",
+    "@oahl/adapter-usb-camera"
+  ],
+  "provider": {
+    "name": "My Personal Test Node"
+  },
+  "devices": [
+    {
+      "id": "usb-cam-1",
+      "type": "camera",
+      "adapter": "usb-camera",
+      "capabilities": [
+        "camera.capture"
+      ]
+    }
+  ]
+}
+```
+
+<Tip>
+  Run `oahl tui` to edit your configuration interactively in the terminal without writing JSON by hand.
+</Tip>
+
+### Local/offline mode
+
+To run with no cloud dependency, set `cloud_url` to an empty string:
+
+```json
+{
+  "node_id": "my-local-lab",
+  "cloud_url": "",
+  "devices": []
+}
+```
+
+The node will skip cloud heartbeats and relay. Local agents can reach your hardware at `http://localhost:3000`.
+
+<Warning>
+  Never expose unrestricted dangerous capabilities. For example, if you have an SDR device, set `policy.public` to `false` and explicitly deny transmit capabilities. OAHL does not transmit by default, but verify your adapter's capability list.
+</Warning>

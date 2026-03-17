@@ -1,0 +1,272 @@
+---
+title: "Discovery"
+description: "Discover available hardware devices and their capabilities."
+---
+
+## GET /v1/capabilities
+
+Returns all devices visible to the calling agent based on bearer-token authentication and the optional agent identity headers. Access policy (`visibility`, `allowed_agents`, etc.) is enforced server-side.
+
+<Note>
+  Agent identity headers (`x-agent-id`, `x-agent-org-id`, `x-agent-roles`) are self-asserted in v1 and not cryptographically bound to the bearer token.
+</Note>
+
+### Authentication
+
+`Authorization: Bearer <agent_api_key>`
+
+### Headers
+
+<ParamField header="x-agent-id" type="string">
+  Stable agent or owner identifier used for access policy enforcement.
+</ParamField>
+
+<ParamField header="x-agent-org-id" type="string">
+  Organisation the agent belongs to, used for org-level access policy.
+</ParamField>
+
+<ParamField header="x-agent-roles" type="string">
+  Comma-separated list of agent roles (self-asserted).
+</ParamField>
+
+### Query parameters
+
+<ParamField query="q" type="string">
+  Free-text search across device ID, type, provider name, and capability names.
+</ParamField>
+
+<ParamField query="type" type="string">
+  Filter by device type (e.g. `camera`, `sensor`, `radio`).
+</ParamField>
+
+<ParamField query="provider" type="string">
+  Filter by provider name.
+</ParamField>
+
+<ParamField query="node_id" type="string">
+  Restrict results to a specific hardware node.
+</ParamField>
+
+<ParamField query="capability" type="string">
+  Filter to devices that expose a specific capability (partial match).
+</ParamField>
+
+<ParamField query="page" type="integer" default="1">
+  Page number (1-indexed). Minimum: 1.
+</ParamField>
+
+<ParamField query="page_size" type="integer" default="25">
+  Results per page. Minimum: 1, maximum: 100.
+</ParamField>
+
+### Response — 200
+
+<ResponseField name="timestamp" type="integer">
+  Unix epoch milliseconds at time of response.
+</ResponseField>
+
+<ResponseField name="devices" type="DeviceDescriptor[]">
+  Array of device descriptors visible to the calling agent.
+
+  <Expandable title="DeviceDescriptor properties">
+    <ResponseField name="id" type="string" required>
+      Unique device identifier.
+    </ResponseField>
+
+    <ResponseField name="type" type="string" required>
+      Device category (e.g. `camera`, `sensor`, `radio`, `mobile`).
+    </ResponseField>
+
+    <ResponseField name="name" type="string">
+      Human-readable device name.
+    </ResponseField>
+
+    <ResponseField name="capabilities" type="CapabilityDescriptor[]" required>
+      List of capabilities this device exposes.
+
+      <Expandable title="CapabilityDescriptor properties">
+        <ResponseField name="name" type="string" required>
+          Capability identifier (e.g. `camera.capture`).
+        </ResponseField>
+
+        <ResponseField name="description" type="string" required>
+          Human-readable description of what this capability does.
+        </ResponseField>
+
+        <ResponseField name="schema" type="object" required>
+          JSON Schema (draft-07+) describing the `params` this capability accepts.
+        </ResponseField>
+
+        <ResponseField name="instructions" type="string">
+          Natural-language instructions for LLM-native agents (MCP style).
+        </ResponseField>
+
+        <ResponseField name="semantic_type" type="string">
+          W3C WoT affordance type (e.g. `ActionAffordance`).
+        </ResponseField>
+
+        <ResponseField name="helper_url" type="string">
+          URL to additional documentation or tooling for this capability.
+        </ResponseField>
+
+        <ResponseField name="pricing" type="object">
+          Pricing information for this capability.
+
+          <Expandable title="PricingDescriptor properties">
+            <ResponseField name="currency" type="string">
+              Currency code (e.g. `USD`).
+            </ResponseField>
+            <ResponseField name="rate_per_minute" type="number">
+              Cost per minute of usage.
+            </ResponseField>
+            <ResponseField name="rate_per_execution" type="number">
+              Cost per execution call.
+            </ResponseField>
+            <ResponseField name="payment_address" type="string">
+              Payment destination address.
+            </ResponseField>
+          </Expandable>
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+
+    <ResponseField name="provider" type="string">
+      Name of the provider operating this device.
+    </ResponseField>
+
+    <ResponseField name="node_id" type="string" required>
+      Identifier of the hardware node hosting this device.
+    </ResponseField>
+
+    <ResponseField name="manufacturer" type="string">
+      Device manufacturer.
+    </ResponseField>
+
+    <ResponseField name="model" type="string">
+      Device model identifier.
+    </ResponseField>
+
+    <ResponseField name="status" type="string" required>
+      Current device status. One of: `available`, `busy`, `offline`.
+    </ResponseField>
+
+    <ResponseField name="access_policy" type="object">
+      Access control policy for this device.
+
+      <Expandable title="DeviceAccessPolicy properties">
+        <ResponseField name="visibility" type="string">
+          One of: `public`, `shared`, `private`.
+          - `public` — any authenticated agent may access.
+          - `shared` — only agents/orgs in the allow-lists may access.
+          - `private` — only the device owner may access.
+        </ResponseField>
+        <ResponseField name="allowed_agents" type="string[]">
+          Agent IDs explicitly allowed to access this device.
+        </ResponseField>
+        <ResponseField name="allowed_orgs" type="string[]">
+          Organisation IDs explicitly allowed to access this device.
+        </ResponseField>
+        <ResponseField name="denied_agents" type="string[]">
+          Agent IDs explicitly denied access.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+
+    <ResponseField name="pricing" type="object">
+      Device-level pricing descriptor. See `CapabilityDescriptor.pricing` for schema.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="pagination" type="object">
+  Pagination metadata.
+
+  <Expandable title="properties">
+    <ResponseField name="page" type="integer">
+      Current page number.
+    </ResponseField>
+    <ResponseField name="page_size" type="integer">
+      Results per page.
+    </ResponseField>
+    <ResponseField name="total" type="integer">
+      Total number of matching devices.
+    </ResponseField>
+    <ResponseField name="total_pages" type="integer">
+      Total number of pages.
+    </ResponseField>
+    <ResponseField name="has_next" type="boolean">
+      Whether a next page exists.
+    </ResponseField>
+    <ResponseField name="has_prev" type="boolean">
+      Whether a previous page exists.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="filters" type="object">
+  Echo of the active filter parameters applied to this response.
+</ResponseField>
+
+### Response — 401
+
+Missing or invalid agent API key.
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+### Example
+
+```bash
+curl -X GET "https://oahl.onrender.com/v1/capabilities?type=camera&page=1&page_size=10" \
+  -H "Authorization: Bearer <agent_api_key>" \
+  -H "x-agent-id: agent-abc123" \
+  -H "x-agent-org-id: org-xyz"
+```
+
+```json
+{
+  "timestamp": 1710000000000,
+  "devices": [
+    {
+      "id": "cam-001",
+      "type": "camera",
+      "name": "Lobby Camera",
+      "node_id": "node-west-1",
+      "provider": "acme-hardware",
+      "manufacturer": "Axis",
+      "model": "P3245-V",
+      "status": "available",
+      "capabilities": [
+        {
+          "name": "camera.capture",
+          "description": "Capture a still image from the camera.",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "resolution": { "type": "string" }
+            }
+          },
+          "semantic_type": "ActionAffordance"
+        }
+      ],
+      "access_policy": {
+        "visibility": "public"
+      }
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "page_size": 10,
+    "total": 1,
+    "total_pages": 1,
+    "has_next": false,
+    "has_prev": false
+  },
+  "filters": {
+    "type": "camera"
+  }
+}
+```

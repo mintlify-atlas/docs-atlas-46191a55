@@ -1,0 +1,66 @@
+---
+title: "Adapter Development Overview"
+description: "Learn what OAHL adapters are, how they work, and where to find official and community-built adapters."
+---
+
+An **adapter** is a Node.js package that implements a standard TypeScript interface from `@oahl/core`. It sits between the OAHL server and your physical hardware: the server calls the adapter's methods, and the adapter translates those calls into whatever API, driver, or system command the hardware requires.
+
+Without adapters, OAHL has no hardware to expose. Every device visible to an AI agent — a camera, a radio receiver, an Android phone — is registered and controlled through an adapter.
+
+## Why adapters exist
+
+Hardware is fragmented. A USB camera speaks V4L2, a software-defined radio needs `rtl-sdr` driver calls, and an Android phone is controlled via ADB commands. Agents should not need to know any of this. Adapters provide a single, uniform contract that the OAHL server and any agent SDK can rely on, regardless of what sits underneath.
+
+The adapter contract is defined by the `Adapter` interface in `@oahl/core`:
+
+```typescript
+export interface Adapter {
+  id: string;
+  initialize(): Promise<void>;
+  healthCheck(): Promise<{ status: 'ok' | 'error'; message?: string }>;
+  getDevices(): Promise<Device[]>;
+  getCapabilities(deviceId: string): Promise<Capability[]>;
+  execute(deviceId: string, capabilityName: string, args: any): Promise<any | ExecutionResult>;
+}
+```
+
+Every method has a defined contract:
+
+| Method | Purpose |
+|---|---|
+| `initialize()` | Called once at node startup — open connections, check for hardware |
+| `healthCheck()` | Polled by the server to confirm the adapter and its hardware are reachable |
+| `getDevices()` | Return the list of physical or virtual `Device` objects this adapter manages |
+| `getCapabilities(deviceId)` | Return the `Capability` list for a specific device — this is what agents see |
+| `execute(deviceId, capabilityName, args)` | Perform a capability action and return the result |
+
+## Official adapters
+
+The OAHL project maintains the following first-party adapter packages:
+
+| Package | Hardware | Key capabilities |
+|---|---|---|
+| `@oahl/adapter-mock` | Simulated virtual sensor | `ping`, `hardware.baseline` |
+| `@oahl/adapter-usb-camera` | USB / V4L2 cameras | `capture_image`, `hardware.baseline` |
+| `@oahl/adapter-rtl-sdr` | RTL2832U SDR dongles | `tune`, `read_samples`, `hardware.baseline` |
+| `@oahl/adapter-android` | Android phones via ADB | 60+ capabilities across `screen`, `system`, `sensor`, `app`, `ui`, and more |
+| `@oahl/adapter-arduino` | Arduino boards via serial | Custom serial capabilities |
+
+All official adapters are published to npm under the `@oahl` scope and listed in the [Adapter Marketplace](https://oahl.org/marketplace).
+
+## In this section
+
+<CardGroup cols={2}>
+  <Card title="Implementing an adapter" icon="code" href="/adapters/implementing-an-adapter">
+    Scaffold a new adapter with `oahl create-adapter`, implement every required method, and install it into your node.
+  </Card>
+  <Card title="Built-in adapters" icon="plug" href="/adapters/built-in-adapters">
+    Full documentation for `@oahl/adapter-mock`, `usb-camera`, `rtl-sdr`, `android`, and `arduino` — installation, configuration, and capabilities.
+  </Card>
+  <Card title="Publishing an adapter" icon="upload" href="/adapters/publishing">
+    Publish your adapter to npm, add an `oahl-manifest.json`, and get listed in the Adapter Marketplace.
+  </Card>
+  <Card title="Adapter Marketplace" icon="store" href="https://oahl.org/marketplace">
+    Browse all community-contributed adapters and install them with a single `oahl install` command.
+  </Card>
+</CardGroup>

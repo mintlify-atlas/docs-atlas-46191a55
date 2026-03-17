@@ -1,0 +1,358 @@
+---
+title: "CLI reference"
+description: "Every oahl CLI command for managing your hardware node."
+---
+
+Install the CLI globally:
+
+```bash
+npm install -g @fredabila/oahl
+```
+
+Verify the installation:
+
+```bash
+oahl --version
+```
+
+---
+
+## `oahl login`
+
+Link this machine to your OAHL Developer Portal account. Prompts for your email address and a 6-digit PIN. Optionally saves credentials to `.oahl-session.json` so you don't need to re-authenticate on every command.
+
+```bash
+oahl login
+```
+
+**Example:**
+
+```bash
+$ oahl login
+# Provider Authentication Required
+# Enter your Developer Portal credentials to link this node to your account.
+Email Address: you@example.com
+6-Digit PIN: ••••••
+Remember these credentials on this machine? Yes
+# Successfully logged in as you@example.com
+```
+
+---
+
+## `oahl logout`
+
+Remove saved credentials from this machine. Deletes `.oahl-session.json` from the current working directory.
+
+```bash
+oahl logout
+```
+
+**Example:**
+
+```bash
+$ oahl logout
+# Logged out. Credentials removed.
+```
+
+---
+
+## `oahl init`
+
+Interactive setup wizard. Creates a new `oahl-config.json` in the current directory. Prompts for your node ID, provider name, and initial device type (USB camera, RTL-SDR, mock sensor, or skip). Requires authentication — runs `oahl login` automatically if no session is found.
+
+```bash
+oahl init
+```
+
+**Example:**
+
+```bash
+$ oahl init
+# Welcome to the OAHL Node Setup Wizard!
+What is the unique ID for this node? my-lab-01
+What is your provider name? Accra Test Lab
+What type of hardware device are you connecting first?
+  USB Camera
+> RTL-SDR Radio
+  Mock / Virtual Sensor
+  Skip for now
+# Successfully generated configuration at: /path/to/oahl-config.json
+```
+
+<Tip>
+  After `oahl init`, run `oahl tui` to add more devices and configure access policies without editing JSON manually.
+</Tip>
+
+---
+
+## `oahl start`
+
+Start the local OAHL node daemon. Loads `oahl-config.json`, starts the HTTP server, and (if `cloud_url` is set) registers the node with the Cloud Registry. Requires authentication.
+
+```bash
+oahl start [options]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|---|---|---|
+| `-p, --port <number>` | Port for the HTTP server | `3000` |
+| `-c, --config <path>` | Path to `oahl-config.json` | `./oahl-config.json` |
+
+**Examples:**
+
+```bash
+# Start on the default port with the default config
+oahl start
+
+# Start on port 8080 with a custom config path
+oahl start --port 8080 --config /etc/oahl/oahl-config.json
+```
+
+<Note>
+  If the configuration file is not found, the node will not start. Run `oahl init` first to generate one.
+</Note>
+
+---
+
+## `oahl scan-ports`
+
+Scan all connected USB and serial devices. Prints each detected device with a suggested adapter, device type, capability hints, and a ready-to-paste config snippet.
+
+```bash
+oahl scan-ports [options]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|---|---|---|
+| `--json` | Output results as machine-readable JSON | `false` |
+
+**Examples:**
+
+```bash
+# Human-readable scan with adapter suggestions
+oahl scan-ports
+
+# JSON output for scripting
+oahl scan-ports --json
+```
+
+**Sample output:**
+
+```text
+ Scanning connected ports/devices...
+ Detected 2 device(s):
+
+1. [USB] USB 2.0 Camera
+   id: USB\VID_046D&PID_0825
+   status: OK
+   vendor: Logitech
+   suggested adapter: @oahl/adapter-usb-camera
+   suggested type: camera
+   capability hints: camera.capture
+   config snippet:
+   {"id":"detected-1","type":"camera","adapter":"usb-camera","capabilities":["camera.capture"]}
+
+2. [SERIAL] /dev/ttyACM0
+   id: /dev/ttyACM0
+   suggested adapter: @oahl/adapter-custom
+   suggested type: serial-device
+   capability hints: device.read, device.write
+```
+
+---
+
+## `oahl tui`
+
+Open an interactive terminal UI to configure the node. Lets you edit node settings, manage plugins, manage devices and access policies, and import devices discovered by installed adapters — all without editing JSON directly.
+
+```bash
+oahl tui [options]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|---|---|---|
+| `-c, --config <path>` | Path to `oahl-config.json` | `./oahl-config.json` |
+
+**Example:**
+
+```bash
+oahl tui
+oahl tui --config /etc/oahl/oahl-config.json
+```
+
+The TUI main menu provides:
+
+- **Edit node settings** — node ID, provider name, cloud URL, API key
+- **Manage plugins** — add or remove adapter packages
+- **Manage devices + access policies** — add, edit, or remove devices with full access control
+- **Import detected devices from plugins** — auto-detect devices from installed adapters
+- **Save / Save and exit / Exit without saving**
+
+---
+
+## `oahl install <adapter>`
+
+Install a hardware adapter plugin via npm, then automatically add it to the `plugins` list in `oahl-config.json`.
+
+```bash
+oahl install <adapter>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|---|---|
+| `adapter` | npm package name of the adapter to install |
+
+**Examples:**
+
+```bash
+oahl install @oahl/adapter-usb-camera
+oahl install @oahl/adapter-rtl-sdr
+oahl install @oahl/adapter-android
+```
+
+Restart your node after installing a new adapter for it to take effect.
+
+---
+
+## `oahl remove <adapter>`
+
+Uninstall a hardware adapter plugin via npm, then automatically remove it from the `plugins` list in `oahl-config.json`.
+
+```bash
+oahl remove <adapter>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|---|---|
+| `adapter` | npm package name of the adapter to remove |
+
+**Example:**
+
+```bash
+oahl remove @oahl/adapter-rtl-sdr
+```
+
+---
+
+## `oahl create-adapter <name>`
+
+Scaffold a new OAHL adapter package in the current workspace. Generates a `package.json`, `tsconfig.json`, and a fully-typed `src/index.ts` implementing the `Adapter` interface with a working `custom.ping` capability.
+
+```bash
+oahl create-adapter <name> [options]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|---|---|
+| `name` | Name for the new adapter (with or without the `adapter-` prefix) |
+
+**Options:**
+
+| Option | Description | Default |
+|---|---|---|
+| `-d, --dir <path>` | Directory to create the adapter in | `.` (current directory) |
+
+**Examples:**
+
+```bash
+# Scaffold an adapter named adapter-spectrometer in the current directory
+oahl create-adapter spectrometer
+
+# Scaffold in the adapters/ subdirectory
+oahl create-adapter my-sensor --dir ./adapters
+```
+
+After scaffolding:
+
+```bash
+cd adapter-spectrometer
+npm install
+npm run build
+oahl install @oahl/adapter-spectrometer
+```
+
+The generated adapter exports a default class named `AdapterSpectrometerAdapter` (or equivalent) that implements `initialize`, `healthCheck`, `getDevices`, `getCapabilities`, and `execute`.
+
+---
+
+## `oahl conformance [adapter]`
+
+Run OAHL conformance checks. When called with an adapter name, validates that the adapter correctly implements the OAHL `Adapter` interface. When called with no argument, runs the full internal platform conformance suite against the `@oahl/core` workspace.
+
+```bash
+oahl conformance [adapter] [options]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|---|---|
+| `adapter` | (Optional) Adapter package name to validate |
+
+**Options:**
+
+| Option | Description | Default |
+|---|---|---|
+| `--workspace <path>` | Path to the OAHL workspace root (used when running platform conformance) | `.` (current directory) |
+
+**Examples:**
+
+```bash
+# Validate a specific adapter
+oahl conformance @oahl/adapter-usb-camera
+
+# Run full internal platform conformance
+oahl conformance
+
+# Run platform conformance from a specific workspace root
+oahl conformance --workspace /path/to/oahl
+```
+
+Exits with code `0` on pass, `1` on failure.
+
+---
+
+## `oahl mcp`
+
+Start an MCP (Model Context Protocol) server that exposes OAHL hardware capabilities to an AI agent. The MCP server connects to the Cloud Registry using an agent API key and makes all discoverable capabilities available as MCP tools.
+
+```bash
+oahl mcp [options]
+```
+
+**Options:**
+
+| Option | Description | Default |
+|---|---|---|
+| `-u, --url <url>` | Cloud Registry URL | `https://oahl.onrender.com` |
+| `-k, --key <key>` | Agent API key | `OAHL_AGENT_API_KEY` env var |
+
+**Examples:**
+
+```bash
+# Using an environment variable for the key
+export OAHL_AGENT_API_KEY=your-agent-key
+oahl mcp
+
+# Passing the key directly
+oahl mcp --key your-agent-key
+
+# Pointing to a self-hosted registry
+oahl mcp --url https://my-oahl-registry.example.com --key your-agent-key
+```
+
+<Note>
+  The `--key` flag is for agent API keys (used by agents to consume hardware), not for provider API keys (used by hardware owners to register nodes). Obtain an agent API key from the Developer Portal.
+</Note>

@@ -1,0 +1,259 @@
+---
+title: "Transport Plugins"
+description: "Reusable connection-protocol plugins that isolate hardware communication mechanics from adapter capability logic."
+keywords: ["transport", "serial", "adb", "ble", "mqtt", "tcp", "attachment profile", "UART", "USB"]
+---
+
+Transport plugins separate connection mechanics (ADB, serial, MQTT, BLE, etc.) from capability logic so adapters never re-implement the same protocol wiring. An adapter selects a transport at runtime by matching an **attachment profile** to a registered `TransportProvider`.
+
+## Available transport plugins
+
+<Columns cols={2}>
+  <Card title="transport-serial" icon="usb">
+    UART and USB serial connections for local sensors, industrial hardware, and microcontrollers. Protocol: `serial`.
+  </Card>
+  <Card title="transport-adb" icon="mobile">
+    Android Debug Bridge — USB bootstrap and Wi-Fi ADB for Android device control. Protocols: `usb`, `tcp`.
+  </Card>
+  <Card title="transport-ble" icon="bluetooth" tag="Planned">
+    Bluetooth Low Energy for short-range wireless hardware. Protocol: `ble`. Planned in Phase 3 of the standardization roadmap.
+  </Card>
+  <Card title="transport-mqtt / transport-tcp" icon="network-wired">
+    MQTT (`mqtt`, `mqtts`) and raw TCP for networked IoT devices and robotic systems on LAN or WAN.
+  </Card>
+</Columns>
+
+## Architecture
+
+Transport plugins implement the `TransportProvider` interface from `@oahl/core` (`packages/core/src/transport.ts`). Adapters hold a list of providers and delegate all connection work to whichever provider matches the current attachment profile.
+
+### `TransportProvider` contract
+
+A compliant transport plugin must implement these five methods:
+
+| Method | Description |
+|---|---|
+| `supports(profile)` | Return `true` if this provider can handle the given attachment profile |
+| `connect(request)` | Open the connection and return a `TransportConnection` |
+| `health(connection)` | Check the connection's liveness |
+| `execute(connection, command)` | Send a `TransportCommand` and return a `TransportResult` |
+| `disconnect(connection)` | Tear down the connection cleanly |
+
+The optional `BaseTransportProvider` base class adds retry support.
+
+### Key types
+
+```typescript
+// All from @oahl/core
+import {
+  TransportProvider,
+  TransportAttachmentProfile,
+  TransportConnection,
+  TransportCommand,
+  TransportResult,
+  BaseTransportProvider
+} from '@oahl/core';
+```
+
+### Recommended package layout
+
+```text
+adapters/
+  adapter-android/
+    src/
+      index.ts                     # Adapter (capability logic)
+      transports/
+        adbUsbTransport.ts         # USB ADB provider
+        adbWifiTransport.ts        # Wi-Fi ADB provider
+      profiles/
+        androidProfiles.ts         # Attachment profile declarations
+      types.ts
+```
+
+## Adapter + transport composition
+
+Adapters receive a list of `TransportProvider` instances at construction time, then select the right one for each execution by calling `supports(profile)`.
+
+```typescript
+import {
+  Adapter,
+  Device,
+  Capability,
+  TransportProvider,
+  TransportAttachmentProfile
+} from '@oahl/core';
+
+export default class AndroidAdapter implements Adapter {
+  id = 'android-adapter';
+
+  constructor(private transports: TransportProvider[]) {}
+
+  async execute(deviceId: string, capabilityName: string, args: any): Promise<any> {
+    const profile: TransportAttachmentProfile = {
+      protocol: 'usb',
+      mode: 'local',
+      metadata: { channel: 'adb' }
+    };
+
+    const transport = this.transports.find(t => t.supports(profile));
+    if (!transport) {
+      throw new Error('No transport provider supports this attachment profile');
+    }
+
+    const connection = await transport.connect({ deviceId, profile, timeoutMs: 5000 });
+    try {
+      return await transport.execute(connection, {
+        operationId: `op-${Date.now()}`,
+        capability: capabilityName,
+        payload: args,
+        timeoutMs: 10000
+      });
+    } finally {
+      await transport.disconnect(connection);
+    }
+  }
+
+  async initialize(): Promise<void> {}
+  async healthCheck() { return { status: 'ok' as const }; }
+  async getDevices(): Promise<Device[]> { return []; }
+  async getCapabilities(_deviceId: string): Promise<Capability[]> { return []; }
+}
+```
+
+## Protocol selection strategy
+
+<Warning>
+Do not silently fall back to an insecure transport when a secure one fails. Prefer explicit configuration over automatic downgrade.
+</Warning>
+
+- Prefer deterministic profile selection driven by device metadata, policy, or environment variables.
+- Fall back to a secondary protocol only when explicitly configured.
+- Log transport selection decisions at debug level so operators can trace which path is in use.
+
+**Common patterns:**
+
+| Hardware | Primary | Secondary |
+|---|---|---|
+| Android device | `usb` (ADB bootstrap) | `tcp` (ADB Wi-Fi, cable-free) |
+| Robotic arm | `mqtts` over LAN with mTLS | — |
+| Industrial sensor | `serial` on local node | — |
+
+## Attachment profiles
+
+An attachment profile is a structured descriptor that tells a transport plugin how a device is physically or logically reachable. Profiles conform to `oahl-attachment-profile.schema.json`.
+
+### Schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oahl.dev/schemas/attachment-profile.schema.json",
+  "title": "OAHL Attachment Profile",
+  "type": "object",
+  "required": ["protocol", "mode"],
+  "properties": {
+    "protocol": {
+      "type": "string",
+      "enum": [
+        "usb", "serial", "pcie", "gpio", "i2c", "spi",
+        "ble", "wifi_direct",
+        "tcp", "udp", "http", "https", "ws", "wss",
+        "mqtt", "mqtts", "coap", "rtsp", "grpc", "webrtc"
+      ]
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["local", "lan", "wan", "relay"]
+    },
+    "endpoint": { "type": "string" },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["none", "token", "basic", "mtls", "pairing", "custom"]
+        },
+        "details": {}
+      }
+    },
+    "security": {
+      "type": "object",
+      "properties": {
+        "tls": { "type": "boolean" },
+        "certificate_pinning": { "type": "boolean" },
+        "encrypted_transport": { "type": "boolean" }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}
+```
+
+### Profile families
+
+| Family | Protocols |
+|---|---|
+| Local physical | `usb`, `serial`, `pcie`, `gpio`, `i2c`, `spi` |
+| Local wireless | `ble`, `wifi_direct` |
+| Network | `tcp`, `udp`, `http`, `https`, `ws`, `wss`, `mqtt`, `mqtts`, `coap`, `rtsp`, `grpc` |
+| Real-time relay | `webrtc` |
+
+### Configuration examples
+
+<CodeGroup>
+
+```json Android USB ADB
+{
+  "protocol": "usb",
+  "mode": "local",
+  "metadata": { "channel": "adb" }
+}
+```
+
+```json Android ADB over Wi-Fi
+{
+  "protocol": "tcp",
+  "mode": "lan",
+  "endpoint": "tcp://192.168.1.42:5555",
+  "metadata": { "channel": "adb" }
+}
+```
+
+```json Robotic arm via MQTT (mTLS)
+{
+  "protocol": "mqtts",
+  "mode": "lan",
+  "endpoint": "mqtts://robot-gateway.local:8883",
+  "auth": { "type": "mtls" },
+  "security": { "tls": true, "certificate_pinning": true }
+}
+```
+
+```json Industrial serial sensor
+{
+  "protocol": "serial",
+  "mode": "local",
+  "endpoint": "/dev/ttyUSB0",
+  "metadata": { "baud_rate": 115200 }
+}
+```
+
+</CodeGroup>
+
+## Conformance requirements
+
+A transport plugin is compliant when it:
+
+- Implements the full `TransportProvider` interface
+- Returns structured errors in `TransportResult.error` (no raw exceptions)
+- Supports `health` checks
+- Applies bounded retry behavior (via `BaseTransportProvider` or equivalent)
+- Never logs credentials or includes them in returned payloads
+
+<Note>
+Capability contracts are transport-agnostic. When an Android adapter switches from USB ADB (bootstrap) to ADB-over-Wi-Fi (cable-free operation), the capability API remains identical — only the attachment profile changes.
+</Note>

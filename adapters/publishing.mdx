@@ -1,0 +1,147 @@
+---
+title: "Publishing an adapter"
+description: "Publish your OAHL adapter to npm and get it listed in the Adapter Marketplace."
+---
+
+Anyone can publish an OAHL adapter and list it in the [Adapter Marketplace](https://oahl.org/marketplace). The listing process is fully automated via a registry crawler — you publish to npm, add a manifest file, and open one pull request.
+
+## How the registry works
+
+The registry is crawler-based. You do not submit JSON files directly:
+
+1. You publish your adapter to **npm** with an `oahl-manifest.json` in the package root.
+2. You open a PR to add your npm package name to [`adapters.txt`](https://github.com/fredabila/oahl/tree/main/registry) in the registry repository.
+3. The crawler (`scripts/generate-registry.mjs`) fetches each package from npm, reads its `oahl-manifest.json`, and auto-generates `registry.json`.
+4. `registry.json` is consumed by the Marketplace UI at build time.
+
+You never manually edit `registry.json` — it is fully generated.
+
+## The `oahl-manifest.json` file
+
+Place an `oahl-manifest.json` file in the root of your adapter package (alongside `package.json`). This is how the crawler discovers your adapter's metadata.
+
+```json
+{
+  "id": "oahl-adapter-my-device",
+  "name": "My Device Adapter",
+  "description": "Exposes temperature and humidity readings to AI agents via I2C.",
+  "author": "your-github-username",
+  "repository": "https://www.npmjs.com/package/@your-org/oahl-adapter-my-device",
+  "npm_package": "@your-org/oahl-adapter-my-device",
+  "hardware_tags": ["sensor", "i2c", "environment"],
+  "capabilities": ["sensor.read_temperature", "sensor.read_humidity"],
+  "license": "MIT"
+}
+```
+
+**Field reference**
+
+| Field | Required | Description |
+|---|---|---|
+| `id` | Yes | Must be `oahl-adapter-<slug>` — lowercase, hyphens only |
+| `name` | Yes | Human-readable display name for the marketplace card |
+| `description` | Yes | One-sentence summary of the adapter |
+| `author` | Yes | GitHub username or org name |
+| `repository` | Yes | Public URL to source code or npm page |
+| `npm_package` | Yes | Exact npm package name — used for `oahl install` |
+| `hardware_tags` | Yes | Searchable tags: device class, protocol, platform |
+| `capabilities` | Yes | Dot-notation capability names the adapter exposes |
+| `license` | Yes | SPDX license identifier (e.g. `MIT`, `Apache-2.0`) |
+| `pypi_package` | No | Python companion package name, if any |
+| `featured` | No | Set by the OAHL maintainer team — do not self-assign |
+| `readme_url` | No | Direct URL to README (auto-filled from unpkg if omitted) |
+| `version` | No | Auto-filled by the crawler from the npm registry |
+
+<Warning>
+  The `id` field must match the pattern `^oahl-adapter-[a-z0-9-]+$` and must be unique across all registered adapters. The schema validator will reject any manifest where `id` does not meet this format.
+</Warning>
+
+## Publishing workflow
+
+<Steps>
+  <Step title="Build a conformant adapter">
+    Your adapter must implement the `Adapter` interface from `@oahl/core`. Before publishing, verify it passes conformance checks:
+
+    ```bash
+    oahl conformance @oahl/adapter-my-device
+    ```
+
+    Key requirements:
+
+    - Every capability must have a `schema` field (JSON Schema object)
+    - Capability names must follow `<domain>.<action>` dot-notation
+    - The adapter class must be the `default export` from `src/index.ts`
+    - Execution results should follow the OAHL execution envelope schema
+  </Step>
+
+  <Step title="Add oahl-manifest.json">
+    Create `oahl-manifest.json` in your package root with all required fields. Validate it against the registry schema before proceeding:
+
+    ```bash
+    npx ajv-cli validate \
+      -s registry/schemas/adapter.schema.json \
+      -d oahl-manifest.json
+    ```
+
+    Make sure `oahl-manifest.json` is **not** listed in `.npmignore` — the crawler reads it directly from the published npm package.
+  </Step>
+
+  <Step title="Choose a package name">
+    OAHL adapters follow a consistent naming convention:
+
+    - Official OAHL team packages: `@oahl/adapter-<name>` (e.g. `@oahl/adapter-usb-camera`)
+    - Community packages: `@your-org/oahl-adapter-<name>` or `oahl-adapter-<name>`
+
+    The package `name` in `package.json` and the `npm_package` field in `oahl-manifest.json` must match exactly.
+  </Step>
+
+  <Step title="Publish to npm">
+    ```bash
+    npm publish --access public
+    ```
+
+    Confirm the published package includes `oahl-manifest.json`:
+
+    ```bash
+    npm pack --dry-run | grep oahl-manifest
+    ```
+  </Step>
+
+  <Step title="Open a PR to adapters.txt">
+    Add a single line with your npm package name to `adapters.txt` in the [OAHL registry repository](https://github.com/fredabila/oahl/tree/main/registry):
+
+    ```
+    @your-org/oahl-adapter-my-device
+    ```
+
+    Open a pull request with this single-line change. The crawler runs on the next registry build and your adapter appears in the Marketplace automatically.
+  </Step>
+</Steps>
+
+## Auto-discovery process
+
+Once your PR is merged, the registry crawler:
+
+1. Reads each line in `adapters.txt` as an npm package name
+2. Fetches the package metadata from the npm registry
+3. Downloads and parses `oahl-manifest.json` from the published package
+4. Validates the manifest against `schemas/adapter.schema.json`
+5. Appends the adapter entry to `registry.json`
+6. Triggers a Marketplace UI rebuild
+
+The crawler runs automatically on every change to `adapters.txt`. You do not need to trigger it manually.
+
+## Getting listed as featured
+
+The Marketplace shows a **Featured Adapters** section for high-quality, well-maintained adapters. The `featured` flag is set by the OAHL maintainer team — you cannot self-assign it. To be considered:
+
+1. The adapter must be fully functional and actively maintained.
+2. Include a comprehensive `README.md` covering setup, capabilities, and example usage.
+3. All capabilities must have clear `description` and `schema` fields.
+4. Open an Issue in the registry repository requesting featured status, with a link to your adapter and a short explanation of the hardware it supports.
+
+If approved, a maintainer sets `"featured": true` in `registry.json` on the next build.
+
+<Tip>
+  Look at [`@oahl/adapter-usb-camera`](https://www.npmjs.com/package/@oahl/adapter-usb-camera) and [`@oahl/adapter-rtl-sdr`](https://www.npmjs.com/package/@oahl/adapter-rtl-sdr) as examples of featured adapters with complete `oahl-manifest.json` files and READMEs.
+</Tip>

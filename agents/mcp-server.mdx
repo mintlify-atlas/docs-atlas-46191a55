@@ -1,0 +1,126 @@
+---
+title: "MCP Server"
+description: "Expose all OAHL hardware capabilities as MCP tools for Claude Desktop, LangChain, Cursor, and any MCP-compatible agent framework."
+---
+
+The OAHL MCP server bridges OAHL hardware with any agent framework that supports the [Model Context Protocol](https://modelcontextprotocol.io). On startup it fetches all capabilities available to your agent key and presents each capability–device pair as a callable MCP tool. Session management (reserve → execute → stop) is handled automatically.
+
+## Why MCP for hardware
+
+MCP is a standard interface for giving LLMs access to external tools and context. By wrapping OAHL inside an MCP server:
+
+- LLMs can discover and call hardware capabilities without any custom code.
+- Session lifecycle is invisible to the model — tools are stateless from the model's perspective.
+- Any MCP-compatible framework works: Claude Desktop, Cursor, LangChain, and others.
+
+## Starting the server
+
+<Steps>
+  <Step title="Install the OAHL CLI">
+    ```bash
+    npm install -g @oahl/cli
+    ```
+  </Step>
+  <Step title="Start the MCP server">
+    Pass your agent API key and the cloud URL:
+
+    ```bash
+    oahl mcp --url https://oahl.onrender.com --key <YOUR_AGENT_API_KEY>
+    ```
+
+    Or use the environment variable:
+
+    ```bash
+    export OAHL_AGENT_API_KEY=<YOUR_AGENT_API_KEY>
+    oahl mcp --url https://oahl.onrender.com
+    ```
+
+    The server starts on stdio and logs `OAHL MCP Server running on stdio` to stderr.
+  </Step>
+</Steps>
+
+## CLI flags
+
+| Flag | Environment variable | Description |
+|---|---|---|
+| `--url <url>` | — | OAHL Cloud base URL |
+| `--key <key>` | `OAHL_AGENT_API_KEY` | Your agent API key |
+
+## How tools are generated
+
+On every `ListTools` request, the server calls `GET /v1/capabilities` and builds one MCP tool per capability–device pair:
+
+- **Tool name**: `{capability_with_underscores}_{device_id_sanitized}` — e.g. `camera_capture_cam-01` becomes `camera_capture_cam_01`
+- **Description**: `[Device: {device_id}] {capability description} Instructions: {instructions}` (if instructions are provided by the adapter)
+- **Input schema**: The JSON Schema from the capability descriptor, or a generic `{ params: object }` schema if none is defined
+
+When a tool is called, the server automatically:
+1. Calls `POST /v1/requests` to reserve a session for the device and capability
+2. Calls `POST /v1/sessions/{session_id}/execute` with the tool arguments as `params`
+3. Calls `POST /v1/sessions/{session_id}/stop` to release the device
+4. Returns the execution result as a JSON text content block
+
+<Note>
+  Capabilities are re-fetched on every `ListTools` request, so the tool list stays current as hardware nodes register and deregister without restarting the MCP server.
+</Note>
+
+## Compatible agent frameworks
+
+- **Claude Desktop** — add to `claude_desktop_config.json`
+- **Cursor** — add to `.cursor/mcp.json`
+- **LangChain** — use the `langchain-mcp-adapters` package
+- Any framework implementing the MCP specification
+
+## Configuration examples
+
+<CodeGroup>
+
+```json claude_desktop_config.json
+{
+  "mcpServers": {
+    "oahl": {
+      "command": "oahl",
+      "args": ["mcp", "--url", "https://oahl.onrender.com", "--key", "<YOUR_AGENT_API_KEY>"]
+    }
+  }
+}
+```
+
+```json .cursor/mcp.json
+{
+  "mcpServers": {
+    "oahl": {
+      "command": "oahl",
+      "args": ["mcp", "--url", "https://oahl.onrender.com"],
+      "env": {
+        "OAHL_AGENT_API_KEY": "<YOUR_AGENT_API_KEY>"
+      }
+    }
+  }
+}
+```
+
+</CodeGroup>
+
+## Session management
+
+Session management is automatic. When an LLM calls an OAHL tool:
+
+1. The MCP server requests a session (`POST /v1/requests`) scoped to the specific device and capability.
+2. It executes the command (`POST /v1/sessions/{id}/execute`) with a 60-second timeout.
+3. It stops the session (`POST /v1/sessions/{id}/stop`) before returning the result.
+
+If execution fails, the error message is returned as a tool result with `isError: true` so the LLM can decide whether to retry or surface the error.
+
+<Warning>
+  The default execute timeout is 60 seconds. For long-running hardware operations, consider using the Direct API or SDK patterns where you can control `timeout_ms` directly.
+</Warning>
+
+## Implementation notes
+
+The MCP server is implemented in `packages/cli/src/mcp.ts` using `@modelcontextprotocol/sdk` and `@oahl/sdk`:
+
+- Transport: **stdio** (`StdioServerTransport`) — the host process communicates over stdin/stdout.
+- Handlers: `ListToolsRequestSchema` (discovery) and `CallToolRequestSchema` (execution).
+- The `CloudClient` from `@oahl/sdk` is used internally for all cloud relay calls.
+- Tool names sanitize dots to underscores and strip non-alphanumeric characters from device IDs.

@@ -1,0 +1,353 @@
+---
+title: "Implementing an adapter"
+description: "Scaffold, implement, and install a custom OAHL adapter for any hardware device."
+---
+
+This guide walks you through building a new OAHL adapter from scratch using the `oahl create-adapter` scaffold command, implementing each required method, and installing the adapter into a running node.
+
+## The `Adapter` interface
+
+Every adapter must implement the `Adapter` interface exported from `@oahl/core`. The full definition, along with its supporting types, is:
+
+```typescript
+export interface Device {
+  id: string;                        // e.g. 'usb-camera-01'
+  type: string;                      // 'camera', 'sensor', 'radio', 'mobile', etc.
+  name: string;                      // Human-friendly display name
+  isPublic: boolean;                 // Whether remote agents can access this device
+  manufacturer?: string;
+  model?: string;
+  serial_number?: string;
+  semantic_context?: string[];       // W3C WoT @context alignment
+  metadata?: Record<string, any>;
+  pricing?: PricingDescriptor;
+}
+
+export interface Capability {
+  name: string;                      // e.g. 'camera.capture'
+  description: string;               // Detailed explanation for the AI agent
+  schema: any;                       // JSON Schema for command arguments
+  instructions?: string;             // Natural language instructions (MCP-style)
+  semantic_type?: string;            // e.g. 'ActionAffordance' from WoT
+  helper_url?: string;
+  template?: string;
+  metadata?: Record<string, any>;
+  pricing?: PricingDescriptor;
+}
+
+export interface ExecutionResult {
+  status: 'success' | 'error';
+  error_code?: string;
+  message?: string;
+  data?: any;
+  agent_recovery_hints?: string[];   // Hints to help agents recover from errors
+  [key: string]: any;
+}
+
+export interface Adapter {
+  id: string;                        // Unique adapter identifier
+  initialize(): Promise<void>;
+  healthCheck(): Promise<{ status: 'ok' | 'error'; message?: string }>;
+  getDevices(): Promise<Device[]>;
+  getCapabilities(deviceId: string): Promise<Capability[]>;
+  execute(deviceId: string, capabilityName: string, args: any): Promise<any | ExecutionResult>;
+}
+```
+
+## Development workflow
+
+<Steps>
+  <Step title="Scaffold the adapter">
+    Use the `oahl create-adapter` command to generate a ready-to-edit package in the current directory:
+
+    ```bash
+    oahl create-adapter my-sensor
+    ```
+
+    The CLI creates the following structure:
+
+    ```
+    adapter-my-sensor/
+    ├── src/
+    │   └── index.ts        # The adapter class — edit this
+    ├── package.json        # @oahl/core as peerDependency
+    ├── tsconfig.json       # TypeScript config, outputs to dist/
+    └── README.md
+    ```
+
+    The generated `src/index.ts` contains a fully working scaffold that compiles and passes `oahl conformance` checks out of the box:
+
+    ```typescript
+    import { Adapter, Device, Capability } from '@oahl/core';
+
+    export default class AdapterMySensorAdapter implements Adapter {
+      id = 'adapter-my-sensor';
+
+      async initialize(): Promise<void> {
+        console.log('[adapter-my-sensor] Initialized');
+      }
+
+      async healthCheck(): Promise<{ status: 'ok' | 'error'; message?: string }> {
+        return { status: 'ok' };
+      }
+
+      async getDevices(): Promise<Device[]> {
+        return [
+          {
+            id: 'adapter-my-sensor-device-01',
+            type: 'custom',
+            name: 'AdapterMySensorAdapter Device',
+            isPublic: false
+          }
+        ];
+      }
+
+      async getCapabilities(deviceId: string): Promise<Capability[]> {
+        if (deviceId !== 'adapter-my-sensor-device-01') {
+          throw new Error('Device not found');
+        }
+
+        return [
+          {
+            name: 'custom.ping',
+            description: 'Smoke-test capability for this adapter',
+            schema: {
+              type: 'object',
+              properties: {
+                message: { type: 'string' }
+              }
+            }
+          }
+        ];
+      }
+
+      async execute(deviceId: string, capabilityName: string, args: any): Promise<any> {
+        if (deviceId !== 'adapter-my-sensor-device-01') {
+          throw new Error('Device not found');
+        }
+
+        if (capabilityName === 'custom.ping') {
+          return {
+            ok: true,
+            adapter: this.id,
+            message: args?.message || 'pong',
+            timestamp: Date.now()
+          };
+        }
+
+        throw new Error('Capability not supported');
+      }
+    }
+    ```
+
+    <Note>
+      The class name is derived from the adapter name you pass to `create-adapter`. Passing `my-sensor` produces a class named `AdapterMySensorAdapter` and a package named `@oahl/adapter-my-sensor`.
+    </Note>
+  </Step>
+
+  <Step title="Implement initialize()">
+    `initialize()` is called once when the OAHL node starts. Use it to open connections, verify the hardware is reachable, and load any configuration.
+
+    ```typescript
+    async initialize(): Promise<void> {
+      // Open your hardware connection here
+      // e.g. open a serial port, check USB device is present, ping an API
+      console.log('[adapter-my-sensor] Initialized');
+    }
+    ```
+
+    If initialization fails (hardware not connected, driver error), throw an error — the node will log the failure and mark the adapter as unavailable.
+  </Step>
+
+  <Step title="Implement healthCheck()">
+    `healthCheck()` is polled periodically by the server to confirm the adapter and its hardware are still reachable.
+
+    ```typescript
+    async healthCheck(): Promise<{ status: 'ok' | 'error'; message?: string }> {
+      // Verify hardware is still responding
+      // Return 'error' with a message if something has gone wrong
+      return { status: 'ok' };
+    }
+    ```
+
+    When the hardware is disconnected, return `{ status: 'error', message: 'Device not connected' }` rather than throwing. This allows the node to surface a clean error to agents instead of crashing.
+  </Step>
+
+  <Step title="Implement getDevices()">
+    `getDevices()` returns the list of `Device` objects your adapter manages. Each device can have different capabilities.
+
+    ```typescript
+    async getDevices(): Promise<Device[]> {
+      return [
+        {
+          id: 'my-sensor-01',
+          type: 'sensor',
+          name: 'Temperature & Humidity Sensor',
+          isPublic: false           // Set true to allow remote agents
+        }
+      ];
+    }
+    ```
+
+    The `id` you return here is the `deviceId` passed into `getCapabilities()` and `execute()`. Keep it stable across restarts.
+  </Step>
+
+  <Step title="Implement getCapabilities() with JSON Schema">
+    `getCapabilities()` returns the list of actions an agent can invoke on a device. The `schema` field is a [JSON Schema](https://json-schema.org/) object that describes the expected arguments. Agents use this to understand how to call your capability.
+
+    ```typescript
+    async getCapabilities(deviceId: string): Promise<Capability[]> {
+      if (deviceId !== 'my-sensor-01') {
+        throw new Error('Device not found');
+      }
+
+      return [
+        {
+          name: 'sensor.read_temperature',
+          description: 'Read the current temperature from the sensor in Celsius',
+          schema: {
+            type: 'object',
+            properties: {
+              unit: {
+                type: 'string',
+                enum: ['celsius', 'fahrenheit'],
+                description: 'Temperature unit to return'
+              }
+            }
+          }
+        },
+        {
+          name: 'sensor.read_humidity',
+          description: 'Read the current relative humidity percentage',
+          schema: {
+            type: 'object',
+            properties: {}
+          }
+        }
+      ];
+    }
+    ```
+
+    Capability names must follow `<domain>.<action>` dot-notation (e.g. `sensor.read`, `camera.capture`, `radio.tune`). Keep domain names stable — changing them is a breaking change for any agent that depends on your adapter.
+
+    <Tip>
+      The `description` field is the primary signal an AI agent uses to decide whether to call this capability. Write it from the agent's perspective: what does this action do, and what is returned?
+    </Tip>
+  </Step>
+
+  <Step title="Implement execute()">
+    `execute()` receives the `deviceId`, the `capabilityName`, and the `args` object validated against your capability's schema. Perform the hardware action and return the result.
+
+    ```typescript
+    async execute(deviceId: string, capabilityName: string, args: any): Promise<any> {
+      if (deviceId !== 'my-sensor-01') {
+        throw new Error('Device not found');
+      }
+
+      if (capabilityName === 'sensor.read_temperature') {
+        // Call your hardware driver / serial port / I2C here
+        const raw = await readSensorRegister(0x01);
+        const celsius = raw / 100.0;
+        const value = args.unit === 'fahrenheit' ? celsius * 9 / 5 + 32 : celsius;
+        return { value, unit: args.unit || 'celsius', timestamp: Date.now() };
+      }
+
+      if (capabilityName === 'sensor.read_humidity') {
+        const raw = await readSensorRegister(0x02);
+        return { humidity_pct: raw / 100.0, timestamp: Date.now() };
+      }
+
+      throw new Error(`Capability ${capabilityName} not supported`);
+    }
+    ```
+
+    Return data in simple JSON formats. If returning binary data such as an image, encode it as a Base64 string.
+  </Step>
+
+  <Step title="Build the adapter">
+    Install dependencies and compile TypeScript:
+
+    ```bash
+    cd adapter-my-sensor
+    npm install
+    npm run build
+    ```
+
+    This outputs compiled JavaScript to `dist/` and type declarations to `dist/index.d.ts`.
+  </Step>
+
+  <Step title="Install into your node">
+    Use `oahl install` to install the adapter and register it in `oahl-config.json` automatically:
+
+    <CodeGroup>
+
+    ```bash From npm (published)
+    oahl install @oahl/adapter-my-sensor
+    ```
+
+    ```bash From local directory (development)
+    npm install ./adapter-my-sensor
+    ```
+
+    </CodeGroup>
+
+    If you install locally via `npm install`, you also need to add the package name to the `plugins` array in `oahl-config.json` manually:
+
+    ```json
+    {
+      "plugins": [
+        "@oahl/adapter-mock",
+        "adapter-my-sensor"
+      ]
+    }
+    ```
+
+    Then start or restart your node:
+
+    ```bash
+    oahl start
+    ```
+  </Step>
+
+  <Step title="Run conformance checks">
+    Verify your adapter satisfies the OAHL interface contract:
+
+    ```bash
+    oahl conformance @oahl/adapter-my-sensor
+    ```
+
+    The conformance command calls `initialize()`, `getDevices()`, `getCapabilities()`, and `execute()` against a set of standard assertions and reports any failures.
+  </Step>
+</Steps>
+
+## Optional: the `hardware.baseline` fallback capability
+
+If you want agents to be able to send free-form intent descriptions when no specific capability matches, add a `hardware.baseline` capability. The mock adapter ships with an example:
+
+```typescript
+{
+  name: 'hardware.baseline',
+  description: 'Fallback capability template for unsupported or ad-hoc hardware actions.',
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      intent:          { type: 'string' },
+      params:          { type: 'object' },
+      expected_output: { type: 'object' },
+      timeout_ms:      { type: 'number', minimum: 1 }
+    },
+    required: ['intent']
+  },
+  template: 'Describe desired action in intent, provide structured params, and include expected_output shape.'
+}
+```
+
+In `execute()`, inspect `args.intent` to decide whether to route to an existing capability or return a structured unhandled response.
+
+## Capability naming conventions
+
+- Use lowercase dot-notation: `<domain>.<action>` — for example, `camera.capture` or `sensor.read`
+- Keep domains stable: `camera`, `radio`, `sensor`, `phone`, `robot`, `lab`, `system`, `screen`
+- Use explicit verbs: `capture`, `stream`, `tune`, `scan`, `read`, `write`, `start`, `stop`
+- Version only when a breaking schema change is required: `camera.capture.v2`

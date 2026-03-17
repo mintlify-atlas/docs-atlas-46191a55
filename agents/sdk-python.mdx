@@ -1,0 +1,222 @@
+---
+title: "Python SDK"
+description: "Use the oahl Python package to integrate AI agents with OAHL hardware. Lightweight — depends only on requests."
+---
+
+The `oahl` Python package provides `OahlClient` for local-node access and `CloudClient` for the OAHL Cloud relay. It targets Python 3.8+ and depends only on `requests`.
+
+## Installation
+
+```bash
+pip install oahl
+```
+
+## Clients at a glance
+
+| Client | Target | Default base URL |
+|---|---|---|
+| `OahlClient` | Local OAHL node | `http://localhost:3000` |
+| `CloudClient` | OAHL Cloud relay | `https://oahl.onrender.com` |
+
+## CloudClient
+
+The standard integration path for agents discovering and using hardware through the OAHL Cloud registry.
+
+### Constructor
+
+```python
+CloudClient(base_url: str = 'https://oahl.onrender.com', agent_api_key: Optional[str] = None)
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `base_url` | `str` | `'https://oahl.onrender.com'` | Cloud API base URL |
+| `agent_api_key` | `str` | `None` | Your provisioned agent API key |
+
+### Methods
+
+```python
+# Update the API key after construction
+set_agent_api_key(agent_api_key: str) -> None
+
+# Query capabilities across the OAHL Cloud network
+get_capabilities(query: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
+
+# Request a session for a device or capability
+request_session(input_data: Dict[str, Any]) -> Dict[str, Any]
+
+# Execute a capability via the cloud relay
+execute(session_id: str, input_data: Dict[str, Any]) -> Any
+
+# Stop a cloud session
+stop_session(session_id: str) -> Dict[str, Any]
+```
+
+### Complete example
+
+```python
+import os
+from oahl import CloudClient
+
+client = CloudClient(agent_api_key=os.environ["OAHL_AGENT_API_KEY"])
+
+# 1. Discover cameras that support capture
+response = client.get_capabilities({
+    "type": "camera",
+    "capability": "camera.capture"
+})
+
+devices = response["devices"]
+if not devices:
+    raise RuntimeError("No matching hardware available")
+
+device_id = devices[0]["id"]
+print(f"Using device: {device_id}")
+
+# 2. Reserve a session
+session_req = client.request_session({
+    "device_id": device_id,
+    "capability": "camera.capture"
+})
+session_id = session_req["session_id"]
+print(f"Session: {session_id}")
+
+try:
+    # 3. Execute the capability
+    result = client.execute(session_id, {
+        "capability": "camera.capture",
+        "params": {"resolution": "1080p", "format": "jpg"},
+        "timeout_ms": 30000
+    })
+    print(result["data"])  # → structured execution result
+finally:
+    # 4. Always release the session
+    client.stop_session(session_id)
+```
+
+## OahlClient
+
+For direct communication with a local OAHL node — no cloud relay.
+
+### Constructor
+
+```python
+OahlClient(base_url: str = 'http://localhost:3000')
+```
+
+### Methods
+
+```python
+# Check the health of the OAHL node
+health() -> Dict[str, Any]
+
+# List all devices managed by this node
+get_devices() -> List[Dict[str, Any]]
+
+# Get capabilities for a specific device
+get_capabilities(device_id: str) -> List[Dict[str, Any]]
+
+# Start a session for a specific device
+start_session(device_id: str) -> Dict[str, Any]
+
+# Execute a capability within an active session
+execute(session_id: str, capability_name: str, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
+
+# Stop an active session
+stop_session(session_id: str) -> Dict[str, Any]
+
+# Get the status of a specific session
+get_session(session_id: str) -> Dict[str, Any]
+```
+
+### Complete example
+
+```python
+from oahl import OahlClient
+
+client = OahlClient("http://localhost:3000")
+
+# Check node health
+health = client.health()
+print(health)
+
+# List connected devices
+devices = client.get_devices()
+print(f"Found {len(devices)} devices")
+
+# Inspect capabilities for the first device
+caps = client.get_capabilities(devices[0]["id"])
+
+# Start a session
+session = client.start_session(devices[0]["id"])
+session_id = session["id"]
+
+try:
+    result = client.execute(session_id, "camera.capture", {"resolution": "1080p"})
+    print(result)
+finally:
+    client.stop_session(session_id)
+```
+
+## Dataclasses
+
+The SDK exports typed dataclasses for local-node responses:
+
+```python
+from oahl import Device, Capability, Session
+
+@dataclass
+class Device:
+    id: str
+    type: str
+    name: str
+    isPublic: bool
+    manufacturer: Optional[str] = None
+    model: Optional[str] = None
+    serial_number: Optional[str] = None
+    semantic_context: Optional[List[str]] = None
+    metadata: Optional[Dict[str, Any]] = None
+    pricing: Optional[Dict[str, Any]] = None
+
+@dataclass
+class Capability:
+    name: str
+    description: str
+    schema: Dict[str, Any]
+    instructions: Optional[str] = None
+    semantic_type: Optional[str] = None
+    helper_url: Optional[str] = None
+    template: Optional[str] = None
+    context: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    pricing: Optional[Dict[str, Any]] = None
+
+@dataclass
+class Session:
+    id: str
+    deviceId: str
+    startTime: int
+    status: str
+```
+
+## Error handling
+
+Both clients raise `Exception` on non-2xx responses:
+
+```python
+try:
+    result = client.execute(session_id, {
+        "capability": "camera.capture",
+        "params": {"resolution": "1080p"}
+    })
+except Exception as e:
+    # e.g. "HTTP error 504: Hardware node did not respond within the timeout window"
+    print(f"Execution failed: {e}")
+    client.stop_session(session_id)
+```
+
+On error responses from the hardware layer, check `result["error"]["agent_recovery_hints"]` for natural-language fix instructions provided by the adapter developer.
+
+<Note>
+  `CloudClient` methods accept plain `dict` arguments and return plain `dict` responses. The SDK does not wrap cloud responses in dataclasses — parse the keys directly as shown in the examples above.
+</Note>

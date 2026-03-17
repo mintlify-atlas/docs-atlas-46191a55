@@ -1,0 +1,128 @@
+---
+title: "Agent Integration Overview"
+description: "Three patterns for integrating AI agents with OAHL hardware: Direct API, SDK, and MCP Server."
+---
+
+OAHL gives AI agents structured, capability-based access to physical hardware. Agents never talk to hardware nodes directly — they interact with the OAHL Cloud relay, which handles routing, session management, and result delivery.
+
+## Integration patterns
+
+<Columns cols={2}>
+  <Card title="Direct API" icon="code" href="/agents/direct-api">
+    Raw HTTP calls against the OAHL Cloud REST API. Full control, no dependencies. Best for polyglot stacks or environments where an SDK is unavailable.
+  </Card>
+  <Card title="JavaScript / TypeScript SDK" icon="js" href="/agents/sdk-javascript">
+    `@oahl/sdk` provides typed `OahlClient` (local node) and `CloudClient` (cloud relay) classes. Best for Node.js and browser-based agents.
+  </Card>
+  <Card title="Python SDK" icon="python" href="/agents/sdk-python">
+    `oahl` provides `OahlClient` and `CloudClient` for Python agents. Lightweight, depends only on `requests`. Best for ML pipelines and AI frameworks.
+  </Card>
+  <Card title="MCP Server" icon="server" href="/agents/mcp-server">
+    Launches a Model Context Protocol server that auto-exposes every available capability as an MCP tool. Best for Claude Desktop, LangChain, Cursor, and any MCP-compatible agent.
+  </Card>
+</Columns>
+
+## When to use each pattern
+
+| Pattern | Use when… |
+|---|---|
+| Direct API | You control the HTTP client, need raw flexibility, or are in a non-JS/Python environment |
+| JS/TS SDK | You are building a Node.js agent or TypeScript application |
+| Python SDK | You are running a Python AI agent, Jupyter notebook, or ML pipeline |
+| MCP Server | Your agent framework already speaks MCP (Claude Desktop, Cursor, LangChain) |
+
+## Authentication
+
+All agent-facing endpoints require a bearer token:
+
+```http
+Authorization: Bearer <agent_api_key>
+```
+
+Your agent API key is provisioned through the OAHL admin dashboard. Include it on every request to `/v1/*` endpoints.
+
+## Agent identity headers
+
+For per-agent and per-org access-policy enforcement (device visibility, allow/deny lists), include optional identity headers:
+
+```http
+x-agent-id: my-agent-id
+x-agent-org-id: my-org-id
+x-agent-roles: hardware-reader,executor
+```
+
+<Note>
+  These headers are self-asserted in v1 and are not cryptographically bound to the bearer token. Only use them if your deployment controls agent key provisioning.
+</Note>
+
+## Hardware access lifecycle
+
+Every integration pattern follows the same four-step lifecycle:
+
+<Steps>
+  <Step title="Discover">
+    Call `GET /v1/capabilities` to list all hardware devices and capabilities visible to your agent. Use query parameters to filter by type, capability name, provider, or node.
+
+    ```http
+    GET /v1/capabilities?capability=camera.capture&type=camera
+    Authorization: Bearer <agent_api_key>
+    ```
+  </Step>
+  <Step title="Request session">
+    Call `POST /v1/requests` with a `device_id` (deterministic) or `capability` (auto-assign). The cloud allocates an exclusive session and returns a `session_id`.
+
+    ```http
+    POST /v1/requests
+    Authorization: Bearer <agent_api_key>
+
+    { "device_id": "cam-01", "capability": "camera.capture" }
+    ```
+  </Step>
+  <Step title="Execute">
+    Call `POST /v1/sessions/{session_id}/execute` with the capability name, params, and an optional timeout. Results are returned synchronously in the response body.
+
+    ```http
+    POST /v1/sessions/sess-3f7a2c1d/execute
+    Authorization: Bearer <agent_api_key>
+
+    { "capability": "camera.capture", "params": { "resolution": "1080p" }, "timeout_ms": 30000 }
+    ```
+
+    For multi-step hardware interactions, use `POST /v1/sessions/{session_id}/execute-batch` to send an ordered array of commands in a single relay call.
+  </Step>
+  <Step title="Stop">
+    Call `POST /v1/sessions/{session_id}/stop` to release the device. Always call this on both success and failure paths — a held session blocks other agents from using the same hardware.
+
+    ```http
+    POST /v1/sessions/sess-3f7a2c1d/stop
+    Authorization: Bearer <agent_api_key>
+    ```
+  </Step>
+</Steps>
+
+## Execution result envelope
+
+All execute responses follow the OAHL canonical result schema (`schema_version: "1.0"`):
+
+```json
+{
+  "schema_version": "1.0",
+  "operation_id": "cmd-3a7f92bc-1234",
+  "status": "success",
+  "completion": { "done": true, "state": "completed" },
+  "capability": "camera.capture",
+  "device_id": "cam-01",
+  "timestamp": "2026-03-17T10:00:00.000Z",
+  "data": { ... }
+}
+```
+
+Status values: `accepted`, `in_progress`, `success`, `error`. On error, inspect `error.agent_recovery_hints` for natural-language recovery suggestions.
+
+## Design recommendations
+
+- **Be capability-based, not device-based.** Expose `capture_image`, not `use /dev/video0`.
+- **Always clean up sessions.** Use `try/finally` blocks to guarantee `stop` is called.
+- **Handle busy and unavailable states.** Hardware can be in use or offline.
+- **Check `error.agent_recovery_hints`.** Adapters embed natural-language fix instructions in error responses.
+- **Validate params against the capability `schema`.** Never send unknown keys or missing required fields.

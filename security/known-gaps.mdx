@@ -1,0 +1,95 @@
+---
+title: "Known Security Gaps"
+description: "Transparent disclosure of unimplemented security controls in OAHL v1, with compensating controls and planned fixes for each."
+---
+
+<Warning>
+The controls listed on this page are **not yet implemented** in OAHL v1. They are on the roadmap for Phase 4. Production operators should apply the compensating controls described below until these gaps are closed.
+</Warning>
+
+## Summary
+
+| Gap | Risk | Compensating control | Fix planned |
+|---|---|---|---|
+| Self-asserted agent identity headers | Agent impersonation | Controlled API key provisioning | Signed JWT / mTLS |
+| No replay protection | Replayed captured requests | Short sessions + enforce HTTPS | Nonces / HMAC signatures |
+| No rate limiting | Agent floods the relay | External proxy / firewall rules | Redis-backed rate limiter |
+| No node attestation | Rogue node registration | Treat all nodes as self-declared | Signed node identity document |
+| No cloud-side schema validation | Malformed params forwarded to node | Adapter-level validation | Cloud-side JSON Schema check |
+| PIN stored in plaintext | Credential exposure if Redis is compromised | Do not use portal in production | bcrypt / Argon2 hashing |
+
+## Gap details
+
+<AccordionGroup>
+  <Accordion title="1. Self-asserted agent identity headers">
+    **Description**
+
+    The `x-agent-id`, `x-agent-org-id`, and `x-agent-roles` headers are read directly from the incoming HTTP request with no cryptographic validation. Any HTTP client can forge any identity value in these headers. As a result, `allowed_agents` and `allowed_orgs` access policy checks can be bypassed by any agent that knows the target identity string.
+
+    **Risk:** An agent with a valid (but unrelated) bearer token can impersonate another agent by setting the correct `x-agent-id` value, gaining access to devices configured with `visibility: shared` for that identity.
+
+    **Compensating control:** Use `allowed_agents` and `allowed_orgs` lists only with agents whose API keys are provisioned through a controlled process where the same provisioning system distributes and records the identity values. Treat the access policy headers as advisory trust signals only, not as proof of identity.
+
+    **Planned fix:** Signed JWT agent identity bound to the bearer token, or mutual TLS (mTLS) client certificate verification. The identity claim would be cryptographically verified by the cloud before any policy evaluation.
+  </Accordion>
+
+  <Accordion title="2. No replay protection">
+    **Description**
+
+    Request payloads carry no nonce and no HMAC signature. A captured API request (e.g., via a network interception) could theoretically be replayed within the session validity window to re-execute the same hardware capability without the original agent's involvement.
+
+    **Risk:** An attacker who captures an in-flight request can replay it to trigger unintended hardware operations for the duration of the session.
+
+    **Compensating control:** Configure short session lifetimes. Enforce HTTPS / TLS on all connections to the cloud relay to prevent interception in the first place. Agents should call `POST /v1/sessions/{session_id}/stop` immediately after completing work.
+
+    **Planned fix:** Short-lived nonces or per-request HMAC signatures, validated by the cloud before forwarding to the node.
+  </Accordion>
+
+  <Accordion title="3. No rate limiting">
+    **Description**
+
+    There is no per-agent or per-node rate limiting on the cloud relay. A misbehaving or compromised agent can send unlimited requests, potentially flooding the relay and starving other agents of access to hardware.
+
+    **Risk:** Denial of service against the cloud relay and downstream hardware nodes.
+
+    **Compensating control:** Place an external reverse proxy or API gateway (e.g., Nginx, Cloudflare, AWS API Gateway) in front of the cloud relay and configure rate limiting at that layer.
+
+    **Planned fix:** Rate limiting middleware in the cloud relay with Redis-backed counters. Requests that exceed the limit will receive HTTP 429 with a `Retry-After` header.
+  </Accordion>
+
+  <Accordion title="4. No node attestation">
+    **Description**
+
+    When a node registers via `POST /v1/provider/nodes/register`, the cloud accepts the registration based on the `provider_api_key` alone. There is no cryptographic proof that the registering entity is running unmodified OAHL software or that the hardware it advertises is genuine.
+
+    **Risk:** A party who obtains a `provider_api_key` can register a rogue node that advertises fabricated hardware capabilities. Agents may unknowingly operate against a simulated or malicious node.
+
+    **Compensating control:** Treat all registered nodes as self-declared. Do not rely solely on device metadata from nodes you do not control. Use device identity alongside access policies to restrict which agents can interact with specific nodes.
+
+    **Planned fix:** Signed node metadata (node identity document), hardware trust level classification distinguishing attested nodes from self-declared ones, and a formal attestation profile validated during registration.
+  </Accordion>
+
+  <Accordion title="5. No cloud-side schema validation">
+    **Description**
+
+    Execution `params` submitted by an agent via `POST /v1/sessions/{session_id}/execute` are forwarded from the cloud to the hardware node without JSON Schema validation at the cloud layer. Schema enforcement relies entirely on the adapter implementation on the node and the correctness of the calling agent.
+
+    **Risk:** A malformed or malicious `params` payload is forwarded directly to the node adapter. Depending on the adapter's robustness, this could cause unexpected behavior, crashes, or hardware misuse.
+
+    **Compensating control:** Implement defensive input validation inside each adapter's `execute` method. The node-side `PolicyEngine` ensures the capability is permitted but does not validate `params` shape.
+
+    **Planned fix:** Cloud-side validation of `params` against the capability's registered JSON Schema before the command is forwarded to the node.
+  </Accordion>
+
+  <Accordion title="6. PIN stored in plaintext">
+    **Description**
+
+    The developer portal (`POST /v1/portal/auth`) stores 6-digit PINs in Redis in plaintext. If Redis is compromised or accessible without authentication, all portal PINs are exposed in cleartext.
+
+    **Risk:** An attacker with read access to Redis can extract portal PINs and authenticate to the developer portal as any registered user.
+
+    **Compensating control:** Do not use the developer portal for production systems without first hashing PINs. Restrict Redis access with a strong password and network-level firewall rules. Consider Redis AUTH and TLS in transit.
+
+    **Planned fix:** bcrypt or Argon2 hashing for portal authentication credentials before storage in Redis.
+  </Accordion>
+</AccordionGroup>

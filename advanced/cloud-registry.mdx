@@ -1,0 +1,247 @@
+---
+title: "Cloud Registry"
+description: "Global hardware discovery and WebSocket relay service that connects AI agents to OAHL hardware nodes."
+keywords: ["cloud", "registry", "websocket", "relay", "discovery", "node registration", "heartbeat", "polling"]
+---
+
+The OAHL Cloud Registry is the central control plane for the Agent Hardware Cloud. It does two things:
+
+1. **Hardware discovery** — maintains a real-time index of registered hardware nodes and their capabilities, visible to authenticated agents via `GET /v1/capabilities`.
+2. **Command relay** — routes execution requests from agents to the correct hardware node and returns the result, using WebSocket fast-path or HTTP long-poll fallback.
+
+The registry is implemented in the `@oahl/cloud` package (Express + Redis + `ws`).
+
+## Node registration
+
+Hardware nodes register with the cloud by calling `POST /v1/provider/nodes/register` on startup and on a repeating heartbeat interval.
+
+<Steps>
+  <Step title="Start the local node">
+    On startup, call `POST /v1/provider/nodes/register` with the node ID, owner metadata, and the full device + capability list.
+
+    ```bash
+    curl -X POST https://oahl.onrender.com/v1/provider/nodes/register \
+      -H "Authorization: Bearer $PROVIDER_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "node_id": "my-lab-node",
+        "owner_id": "agent-abc",
+        "owner_email": "owner@example.com",
+        "provider": { "name": "MyLab" },
+        "devices": [
+          {
+            "id": "usb-camera-01",
+            "type": "camera",
+            "name": "Lab Camera",
+            "capabilities": [
+              {
+                "name": "camera.capture",
+                "description": "Capture a still image.",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "resolution": { "type": "string", "enum": ["720p", "1080p"] }
+                  }
+                }
+              }
+            ],
+            "status": "available"
+          }
+        ]
+      }'
+    ```
+  </Step>
+  <Step title="Send heartbeats every 15 seconds">
+    Re-send the same registration payload every **15 seconds** to keep the node record alive in Redis. Node records expire after **300 seconds** if not refreshed — the device will disappear from capability discovery.
+
+    ```typescript
+    setInterval(() => {
+      fetch('https://oahl.onrender.com/v1/provider/nodes/register', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${PROVIDER_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(registrationPayload)
+      });
+    }, 15_000);
+    ```
+  </Step>
+  <Step title="Connect the WebSocket relay">
+    Open a persistent WebSocket connection to `wss://<host>/ws/provider` so the cloud can push commands in real time without polling overhead.
+
+    ```typescript
+    const ws = new WebSocket(
+      `wss://oahl.onrender.com/ws/provider?node_id=${NODE_ID}`,
+      { headers: { 'Authorization': `Bearer ${PROVIDER_API_KEY}`, 'x-node-id': NODE_ID } }
+    );
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+`PROVIDER_API_KEY` and `AGENT_API_KEY` are distinct credentials. Never expose the provider key to agents or include it in client-side code.
+</Warning>
+
+## WebSocket relay
+
+When a node is connected via `wss://<host>/ws/provider`, the cloud forwards commands over the socket and awaits a `result` message. This is the **primary** execution path.
+
+### Connection
+
+```
+wss://<host>/ws/provider?node_id=<node_id>
+Authorization: Bearer <provider_api_key>
+x-node-id: <node_id>
+```
+
+### Cloud → node messages
+
+**Single command:**
+
+```json
+{
+  "type": "command",
+  "payload": {
+    "requestId": "cmd-3a7f92bc-1234",
+    "sessionId": "sess-...",
+    "deviceId": "usb-camera-01",
+    "capability": "camera.capture",
+    "params": { "resolution": "1080p" },
+    "dispatchedAt": 1742121600000
+  }
+}
+```
+
+**Batch command:**
+
+```json
+{
+  "type": "command-batch",
+  "payload": {
+    "requestId": "batch-9f2a1e3c-5678",
+    "sessionId": "sess-...",
+    "deviceId": "usb-camera-01",
+    "commands": [
+      { "capability": "camera.capture", "params": { "resolution": "1080p" } },
+      { "capability": "camera.capture", "params": { "resolution": "720p" } }
+    ],
+    "dispatchedAt": 1742121600000
+  }
+}
+```
+
+### Node → cloud messages
+
+After executing the command, the node sends a `result` message back over the same socket:
+
+```json
+{
+  "type": "result",
+  "requestId": "cmd-3a7f92bc-1234",
+  "result": {
+    "schema_version": "1.0",
+    "operation_id": "cmd-3a7f92bc-1234",
+    "status": "success",
+    "completion": { "done": true, "state": "completed" },
+    "capability": "camera.capture",
+    "device_id": "usb-camera-01",
+    "timestamp": "2026-03-17T10:00:00.000Z",
+    "data": { "image_url": "https://storage.example.com/img/abc123.jpg" }
+  }
+}
+```
+
+## HTTP long-poll fallback
+
+If no WebSocket is connected, the cloud enqueues the command in Redis and the node retrieves it via long-poll.
+
+**Node polls for commands:**
+
+```bash
+# Blocks up to 30 seconds. Returns 200 with payload or 204 (no content).
+GET /v1/provider/nodes/{node_id}/poll
+Authorization: Bearer <provider_api_key>
+```
+
+**Node posts the result:**
+
+```bash
+POST /v1/provider/nodes/results
+Authorization: Bearer <provider_api_key>
+Content-Type: application/json
+
+{
+  "requestId": "cmd-3a7f92bc-1234",
+  "result": { ... }
+}
+```
+
+<Note>
+If the cloud still has a pending WebSocket promise for the `requestId` when the HTTP result arrives, it resolves that promise immediately (the response header will show `x-oahl-relay-mode: websocket`).
+</Note>
+
+## Relay modes
+
+Every execution response includes the `x-oahl-relay-mode` and `x-oahl-request-id` response headers so agents and operators can observe how a command was routed.
+
+| Mode | Description |
+|---|---|
+| `websocket` | Result arrived over the WebSocket fast-path within the fast-path timeout (default: 10 s) |
+| `websocket-late` | Fast-path timed out, but the result arrived in Redis during the grace window (default: 20 s) |
+| `websocket-timeout` | Both fast-path and grace window expired; HTTP 504 returned |
+| `polling` | No WebSocket connected; result retrieved via HTTP long-poll (default: 30 s) |
+| `polling-timeout` | Long-poll window expired; HTTP 504 returned |
+
+<Tip>
+For reliable production deployments, keep the WebSocket connection alive and implement automatic reconnection. Polling adds latency equal to the poll cycle duration.
+</Tip>
+
+## Environment configuration
+
+The cloud service is configured via environment variables:
+
+```bash
+# Redis connection (Upstash, Render, or local)
+REDIS_URL=redis://localhost:6379
+
+# Credentials — keep distinct and secret
+PROVIDER_API_KEY=your_secret_provider_key_here
+AGENT_API_KEY=your_secret_agent_key_here
+
+# Relay timeout tuning (optional — shown with defaults)
+OAHL_WS_FASTPATH_TIMEOUT_MS=10000
+OAHL_WS_LATE_RESULT_GRACE_MS=20000
+OAHL_POLLING_RESULT_TIMEOUT_S=30
+OAHL_EXECUTE_RATE_LIMIT=120
+```
+
+## Running without the cloud
+
+For local development or air-gapped deployments, point `@oahl/server` directly at a local cloud instance or omit the cloud entirely by leaving `cloud_url` empty in your node configuration. Agents connect directly to the local node's REST API (`http://localhost:3000`) without any relay.
+
+<Note>
+Without the cloud relay, capability discovery is limited to devices registered on the local node. Cross-network discovery requires the cloud registry.
+</Note>
+
+## The `@oahl/cloud` package
+
+The registry is packaged as `@oahl/cloud` (version `0.1.6`). It is a standalone Express application that you can self-host.
+
+**Dependencies:** `express`, `redis`, `ws`, `ajv`, `bcrypt`, `cors`, `dotenv`, `express-rate-limit`
+
+**Build and run:**
+
+```bash
+# Install
+npm install
+
+# Build TypeScript
+npm run build
+
+# Start the server
+npm start
+# → ☁️ OAHL Cloud Service running on port 8000
+```
+
+The default port is `8000`. Set `PORT` in the environment to override.

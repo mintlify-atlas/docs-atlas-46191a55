@@ -1,0 +1,170 @@
+---
+title: "Architecture"
+description: "How OAHL nodes, adapters, the policy engine, the session manager, and the cloud registry work together."
+---
+
+OAHL is a layered system. A local **Node** wraps physical hardware behind a standard HTTP API. A **Cloud Registry** brokers connections between remote agents and those nodes. The two halves communicate over a persistent WebSocket relay so agents never need a direct network path to the hardware owner's machine.
+
+## System diagram
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        AI Agent                             │
+│         (@oahl/sdk  ·  oahl Python SDK  ·  MCP)             │
+└────────────────────────┬────────────────────────────────────┘
+                         │  REST / SDK calls
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│               Cloud Registry  (@oahl/cloud)                 │
+│         Capability discovery · Session brokering            │
+│              WebSocket relay to local nodes                 │
+└────────────────────────┬────────────────────────────────────┘
+                         │  WebSocket relay (outbound from node)
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  OAHL Node  (@oahl/server)                  │
+│  ┌──────────────────┐   ┌──────────────────────────────┐   │
+│  │  PolicyEngine    │   │       SessionManager         │   │
+│  │  (@oahl/core)    │   │        (@oahl/core)           │   │
+│  └──────────────────┘   └──────────────────────────────┘   │
+│                                                             │
+│  ┌────────────┐  ┌────────────┐  ┌────────────────────┐   │
+│  │ adapter-   │  │ adapter-   │  │  adapter-android /  │   │
+│  │ usb-camera │  │ rtl-sdr    │  │  adapter-custom …   │   │
+│  └─────┬──────┘  └─────┬──────┘  └────────┬───────────┘   │
+└────────┼───────────────┼─────────────────-┼───────────────┘
+         │               │                  │
+     Webcam           RTL-SDR           Serial / BLE …
+```
+
+## Packages
+
+| Package | Role |
+|---|---|
+| `@oahl/cli` | Setup wizard, TUI config editor, adapter scaffolding, `oahl start` |
+| `@oahl/server` | Local node HTTP server — REST API surface for agents |
+| `@oahl/core` | Domain models (`Device`, `Capability`, `Session`), `PolicyEngine`, `SessionManager` |
+| `@oahl/adapter-*` | Hardware-specific plugins — implement the `Adapter` interface |
+| `@oahl/sdk` | JavaScript/TypeScript client for agents (local node + cloud relay) |
+| `@oahl/cloud` | Cloud Registry and WebSocket relay server |
+
+## Components
+
+### Node (`@oahl/server`)
+
+The Node is the open-source daemon that hardware owners run on their own machine. It:
+
+- Exposes a **REST API** for session management and capability execution
+- Loads **adapter plugins** at startup based on the `plugins` list in `oahl-config.json`
+- Opens an outbound WebSocket connection to the Cloud Registry to receive relayed agent commands
+- Enforces all **policies** and **session locks** before passing any command to an adapter
+
+### Adapters (`@oahl/adapter-*`)
+
+Adapters are device-specific plugins that implement the standard `Adapter` interface from `@oahl/core`:
+
+```typescript
+interface Adapter {
+  id: string;
+  initialize(): Promise<void>;
+  healthCheck(): Promise<{ status: 'ok' | 'error'; message?: string }>;
+  getDevices(): Promise<Device[]>;
+  getCapabilities(deviceId: string): Promise<Capability[]>;
+  execute(deviceId: string, capabilityName: string, args: any): Promise<any>;
+}
+```
+
+First-party adapters include:
+
+- `@oahl/adapter-usb-camera` — OpenCV-based webcam capture (`camera.capture`, `camera.stream`)
+- `@oahl/adapter-rtl-sdr` — RTL-SDR radio (`radio.scan`, `radio.measure_power`)
+- `@oahl/adapter-android` — Android device via ADB (`screen.screenshot`, `system.shell`)
+- `@oahl/adapter-mock` — Virtual sensor for testing and development (`sensor.read`)
+
+### Core: PolicyEngine and SessionManager (`@oahl/core`)
+
+**`PolicyEngine`** validates every capability execution request against the per-device policy defined in `oahl-config.json`. Policies control:
+
+- `visibility` — `public`, `shared` (allow-list), or `private`
+- `allowed_agents` / `denied_agents` — per-agent access lists
+- `allowed_orgs` — per-organisation access
+- `max_session_minutes` — maximum session duration
+
+**`SessionManager`** enforces exclusive device access. Only one agent may hold an active session on a device at a time. Any execution request against a device that is already in session by another agent is rejected until that session is released or times out.
+
+### Cloud Registry (`@oahl/cloud`)
+
+The Cloud Registry is the central matchmaking service. It:
+
+- Accepts **outbound registrations** from local nodes (nodes connect to it, not the other way around)
+- Maintains a **capability index** so agents can call `GET /v1/capabilities` to discover available hardware globally
+- **Brokers sessions** — when an agent calls `POST /v1/requests`, the registry selects an appropriate node and creates a relay channel
+- **Relays commands** between the agent and the correct node over WebSocket
+
+The registry is strictly optional. Set `"cloud_url": ""` in `oahl-config.json` to run a fully private, local-only node.
+
+### SDK (`@oahl/sdk`)
+
+The JavaScript/TypeScript SDK provides two clients:
+
+- **`OahlClient`** — connects directly to a local node (`http://localhost:3000`)
+- **`CloudClient`** — discovers and executes capabilities via the Cloud Registry relay
+
+A Python SDK (`oahl` on PyPI) provides the same two clients for agent frameworks that use Python.
+
+## Execution flow
+
+<Steps>
+  <Step title="Agent requests a session">
+    The agent calls `POST /v1/requests` with the desired `deviceId` (or a capability name to let the registry pick a matching device). The Cloud Registry forwards the request to an available node.
+  </Step>
+
+  <Step title="SessionManager checks availability">
+    The Node's `SessionManager` verifies that the target device is not already locked by another session. If available, it creates a new session record and returns a `sessionId`.
+  </Step>
+
+  <Step title="Agent executes a capability">
+    The agent calls `POST /v1/sessions/{sessionId}/execute` with the capability name (e.g. `camera.capture`) and any parameters.
+  </Step>
+
+  <Step title="PolicyEngine validates the request">
+    Before touching hardware, the `PolicyEngine` checks the request against the device's policy: is this agent on the allow-list? Does this capability fall within the permitted set? Has the session exceeded `max_session_minutes`?
+  </Step>
+
+  <Step title="Adapter executes on hardware">
+    If the policy check passes, the server routes the command to the matching adapter plugin. The adapter calls the physical device driver (e.g. OpenCV, RTL-SDR binary, ADB) and returns a structured result.
+  </Step>
+
+  <Step title="Agent releases the session">
+    The agent calls `POST /v1/sessions/{sessionId}/stop` to release the device lock. The `SessionManager` marks the device as available for the next request.
+  </Step>
+</Steps>
+
+## WebSocket relay modes
+
+When a node connects to the Cloud Registry, the relay negotiates one of four transport modes depending on network conditions:
+
+| Mode | Description |
+|---|---|
+| `websocket` | Full-duplex WebSocket — lowest latency, used by default when both sides support it |
+| `websocket-late` | WebSocket established after the initial HTTP handshake completes |
+| `polling` | HTTP long-polling fallback for environments that block persistent connections |
+| `polling-timeout` | Short-interval polling used when long-poll connections are forcibly terminated |
+
+<Note>
+  The relay mode is negotiated automatically. You do not need to configure it manually. If you are operating behind a corporate proxy that strips WebSocket upgrade headers, the relay will fall back to `polling` transparently.
+</Note>
+
+## Running without the cloud
+
+To operate a fully private, air-gapped node:
+
+```json
+{
+  "node_id": "my-local-lab",
+  "cloud_url": "",
+  "devices": [ "..." ]
+}
+```
+
+With `cloud_url` empty the node skips registration and relay entirely. Local agents interact directly with the node's HTTP API on the LAN (typically `http://localhost:3000`). No data leaves the machine.

@@ -1,0 +1,290 @@
+---
+title: "JavaScript / TypeScript SDK"
+description: "Use @oahl/sdk to integrate AI agents with OAHL hardware from Node.js or browser environments."
+---
+
+`@oahl/sdk` provides two typed clients: `OahlClient` for direct local-node communication and `CloudClient` for the OAHL Cloud relay. Both clients throw on non-2xx responses with the HTTP status and response body.
+
+## Installation
+
+```bash
+npm install @oahl/sdk
+```
+
+## Clients at a glance
+
+| Client | Target | Default base URL |
+|---|---|---|
+| `OahlClient` | Local OAHL node | `http://localhost:3000` |
+| `CloudClient` | OAHL Cloud relay | `https://oahl.onrender.com` |
+
+## CloudClient
+
+The most common integration path for agents accessing hardware across the global registry.
+
+### Constructor
+
+```typescript
+new CloudClient(baseUrl?: string, agentApiKey?: string)
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `baseUrl` | `string` | `'https://oahl.onrender.com'` | Cloud API base URL |
+| `agentApiKey` | `string` | — | Your provisioned agent API key |
+
+### Methods
+
+```typescript
+// Update the API key after construction
+setAgentApiKey(agentApiKey: string): void
+
+// Discover devices with optional filtering
+getCapabilities(query?: CloudCapabilitiesQuery): Promise<CloudCapabilitiesResponse>
+
+// Reserve a hardware session
+requestSession(input: CloudRequestSessionInput): Promise<CloudSessionRequestResponse>
+
+// Execute a capability on a reserved session
+execute(sessionId: string, input: CloudExecuteInput): Promise<any>
+
+// Release a hardware session
+stopSession(sessionId: string): Promise<CloudStopSessionResponse>
+```
+
+### Complete example
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    import { CloudClient } from '@oahl/sdk';
+
+    const cloud = new CloudClient(
+      'https://oahl.onrender.com',
+      process.env.OAHL_AGENT_KEY
+    );
+
+    // 1. Discover devices
+    const { devices, pagination } = await cloud.getCapabilities({
+      type: 'camera',
+      capability: 'camera.capture',
+      page: 1,
+      page_size: 25
+    });
+
+    console.log(`Found ${pagination?.total} devices`);
+
+    // 2. Reserve a session on a specific device
+    const { session_id } = await cloud.requestSession({
+      device_id: devices[0].id,
+      capability: 'camera.capture'
+    });
+
+    try {
+      // 3. Execute the capability
+      const result = await cloud.execute(session_id, {
+        capability: 'camera.capture',
+        params: { resolution: '1080p', format: 'jpg' },
+        timeout_ms: 30000
+      });
+
+      console.log(result.data); // → structured execution result
+    } finally {
+      // 4. Always release the session
+      await cloud.stopSession(session_id);
+    }
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    const { CloudClient } = require('@oahl/sdk');
+
+    const cloud = new CloudClient(
+      'https://oahl.onrender.com',
+      process.env.OAHL_AGENT_KEY
+    );
+
+    const { devices, pagination } = await cloud.getCapabilities({
+      type: 'camera',
+      capability: 'camera.capture'
+    });
+
+    const { session_id } = await cloud.requestSession({
+      device_id: devices[0].id,
+      capability: 'camera.capture'
+    });
+
+    try {
+      const result = await cloud.execute(session_id, {
+        capability: 'camera.capture',
+        params: { resolution: '1080p', format: 'jpg' },
+        timeout_ms: 30000
+      });
+      console.log(result.data);
+    } finally {
+      await cloud.stopSession(session_id);
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## OahlClient
+
+For direct communication with a local OAHL node — no cloud relay.
+
+### Constructor
+
+```typescript
+new OahlClient(baseUrl?: string)
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `baseUrl` | `string` | `'http://localhost:3000'` | Local node URL |
+
+### Methods
+
+```typescript
+// Check node health status
+health(): Promise<any>
+
+// List all connected devices
+getDevices(): Promise<Device[]>
+
+// Get capabilities for a specific device
+getCapabilities(deviceId: string): Promise<Capability[]>
+
+// Start a hardware session on a device
+startSession(deviceId: string): Promise<Session>
+
+// Execute a capability within an active session
+execute(sessionId: string, capabilityName: string, args?: any): Promise<any>
+
+// End a session
+stopSession(sessionId: string): Promise<void>
+
+// Get current session status
+getSession(sessionId: string): Promise<Session>
+```
+
+### Complete example
+
+```typescript
+import { OahlClient } from '@oahl/sdk';
+
+const node = new OahlClient('http://localhost:3000');
+
+// Check node is reachable
+const health = await node.health();
+
+// List all connected devices
+const devices = await node.getDevices();
+
+// Inspect capabilities for the first device
+const caps = await node.getCapabilities(devices[0].id);
+
+// Start a session
+const session = await node.startSession(devices[0].id);
+
+try {
+  // Execute a capability
+  const result = await node.execute(session.id, 'camera.capture', {
+    resolution: '720p'
+  });
+  console.log(result);
+} finally {
+  await node.stopSession(session.id);
+}
+```
+
+## TypeScript interfaces
+
+All interfaces exported from `@oahl/sdk`:
+
+```typescript
+interface CloudCapabilitiesQuery {
+  q?: string;          // Free-text search over device id/type/provider/capability names
+  type?: string;       // Device type filter (e.g. 'android', 'camera')
+  provider?: string;   // Provider name filter
+  node_id?: string;    // Specific node filter
+  capability?: string; // Capability name filter (partial match)
+  page?: number;       // Page number, 1-indexed (default: 1)
+  page_size?: number;  // Results per page (default: 25, max: 100)
+}
+
+interface CloudCapabilitiesPagination {
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+  has_next: boolean;
+  has_prev: boolean;
+}
+
+interface CloudCapabilityDevice {
+  id: string;
+  type: string;
+  capabilities: Array<string | Capability>;
+  provider: string;
+  node_id: string;
+  status: string;
+}
+
+interface CloudCapabilitiesResponse {
+  timestamp: number;
+  devices: CloudCapabilityDevice[];
+  pagination?: CloudCapabilitiesPagination;
+  filters?: {
+    q?: string;
+    type?: string;
+    provider?: string;
+    node_id?: string;
+    capability?: string;
+  };
+}
+
+interface CloudRequestSessionInput {
+  capability?: string;  // Auto-assign a device supporting this capability
+  device_id?: string;   // Target a specific device
+  node_id?: string;     // Pin to a specific node (requires device_id)
+}
+
+interface CloudSessionRequestResponse {
+  session_id: string;
+  status: string;       // 'accepted'
+}
+
+interface CloudExecuteInput {
+  capability: string;   // e.g. 'camera.capture', 'screen.capture'
+  params?: Record<string, any>; // Validated against the capability's JSON Schema
+  timeout_ms?: number;  // Override default relay timeout in ms
+}
+
+interface CloudStopSessionResponse {
+  status: string;       // 'stopped'
+}
+```
+
+## Error handling
+
+Both clients throw on non-2xx responses:
+
+```typescript
+try {
+  const result = await cloud.execute(session_id, {
+    capability: 'camera.capture',
+    params: { resolution: '1080p' }
+  });
+} catch (err) {
+  // err.message → "HTTP error 408: WebSocket command timed out..."
+  // err.message → "HTTP error 404: session not found"
+  console.error(err.message);
+}
+```
+
+## Environment variables
+
+| Variable | Description |
+|---|---|
+| `OAHL_AGENT_KEY` | Your agent API key (provisioned via the admin dashboard) |
+| `OAHL_CLOUD_URL` | Override the default cloud URL |

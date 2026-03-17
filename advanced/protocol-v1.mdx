@@ -1,0 +1,326 @@
+---
+title: "OAHL Protocol v1"
+description: "System-level, transport-agnostic protocol contract for device discovery, session management, capability execution, and result envelopes."
+keywords: ["protocol", "execution result", "session", "schema", "WoT", "standardization", "v1"]
+---
+
+OAHL Protocol v1 defines the hardware-agnostic contract that any device type and any transport plugs into. It is stable (`v1.0`) and suitable for external implementation.
+
+## API lifecycle
+
+### Agent-facing endpoints
+
+```
+GET  /v1/capabilities                        Discover available devices and capabilities
+POST /v1/requests                            Reserve a session for a device/capability
+POST /v1/sessions/{session_id}/execute       Execute a capability
+POST /v1/sessions/{session_id}/execute-batch Execute multiple capabilities in one trip
+POST /v1/sessions/{session_id}/stop          Release the session
+```
+
+### Node-to-cloud endpoints
+
+```
+POST /v1/provider/nodes/register     Register / heartbeat a hardware node
+GET  /v1/provider/nodes/{id}/poll    Long-poll for pending commands (fallback)
+POST /v1/provider/nodes/results      Deliver execution result to cloud
+WS   /ws/provider                    Real-time bidirectional relay channel
+```
+
+## Execution result envelope
+
+All capability executions MUST return a result conforming to `oahl-execution-result.schema.json`. The envelope is transport-agnostic and protocol-version-stamped.
+
+### Required fields
+
+| Field | Type | Description |
+|---|---|---|
+| `schema_version` | `"1.0"` | Envelope compatibility marker |
+| `operation_id` | string | Unique ID assigned by the cloud relay (e.g. `cmd-3a7f92bc-1234`) |
+| `status` | enum | Overall result status (see below) |
+| `completion` | object | Fine-grained execution state |
+| `capability` | string | Capability name that was executed (e.g. `camera.capture`) |
+| `device_id` | string | ID of the device that executed the capability |
+| `timestamp` | date-time | ISO 8601 timestamp of result creation |
+
+### Optional fields
+
+| Field | Type | Description |
+|---|---|---|
+| `data` | any | Capability-specific structured output payload |
+| `error` | object | Required when `status` is `error` |
+| `meta` | object | Relay and adapter metadata (`adapter_id`, `relay_latency_ms`, `node_id`) |
+
+### Minimal valid envelope
+
+```json
+{
+  "schema_version": "1.0",
+  "operation_id": "cmd-123",
+  "status": "success",
+  "completion": { "done": true, "state": "completed" },
+  "capability": "robotic_arm.move",
+  "device_id": "arm-01",
+  "timestamp": "2026-03-16T10:00:00.000Z"
+}
+```
+
+## Status enum
+
+| Value | Meaning |
+|---|---|
+| `accepted` | Command received, not yet executed |
+| `in_progress` | Execution is underway |
+| `success` | Execution completed successfully |
+| `error` | Execution failed; the `error` object MUST be present |
+
+## Completion state
+
+The `completion` object provides fine-grained progress tracking independent of `status`.
+
+```json
+{
+  "done": false,
+  "state": "in_progress",
+  "progress_pct": 42
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `done` | boolean | Whether execution has finished (success or failure) |
+| `state` | enum | `queued` \| `in_progress` \| `completed` \| `failed` |
+| `progress_pct` | number (0–100) | Optional progress percentage |
+
+## Error object
+
+When `status` is `error`, the `error` field MUST be present.
+
+```json
+{
+  "error": {
+    "code": "TRANSPORT_ERROR",
+    "message": "ADB connection to device arm-01 timed out after 5000ms.",
+    "retryable": true,
+    "agent_recovery_hints": [
+      "Check that the device is powered on and the USB cable is connected.",
+      "Try reconnecting the device and retrying the session."
+    ],
+    "details": {
+      "transport": "usb",
+      "timeout_ms": 5000
+    }
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `code` | string | Machine-readable error code from the standard catalog |
+| `message` | string | Human-readable description |
+| `retryable` | boolean | Whether retrying the operation may succeed |
+| `agent_recovery_hints` | string[] | Natural-language recovery suggestions for the calling agent |
+| `details` | object \| null | Structured diagnostic payload |
+
+### Standard error codes
+
+| Code | Meaning |
+|---|---|
+| `EXECUTION_FAILED` | General adapter execution failure |
+| `ADAPTER_REPORTED_FAILURE` | Adapter returned `success: false` without a structured error |
+| `MOVE_BLOCKED` | Robotic path obstruction |
+| `DEVICE_BUSY` | Device has an active exclusive session |
+| `DEVICE_NOT_FOUND` | No adapter can locate the requested device ID |
+| `CAPABILITY_NOT_SUPPORTED` | Adapter does not implement the requested capability |
+| `POLICY_DENIED` | PolicyEngine blocked the capability for this device |
+| `SESSION_NOT_FOUND` | Session ID is invalid or expired |
+| `ACCESS_DENIED` | Agent identity not permitted to access the device |
+| `HARDWARE_TIMEOUT` | Node did not return a result within the allowed window |
+| `SCHEMA_VALIDATION_FAILED` | Request params failed JSON Schema validation |
+| `TRANSPORT_ERROR` | Underlying device transport (serial, ADB, BLE, etc.) failed |
+
+## Session semantics
+
+- Session IDs are opaque UUIDs with a `sess-` prefix.
+- Sessions are **exclusive per device** while active. Concurrent session requests for the same device are rejected.
+- Agents MUST call `POST /v1/sessions/{id}/stop` after use — on both success and failure paths.
+- Sessions expire automatically after **3600 seconds** of inactivity on the cloud relay.
+- Batch execution (`execute-batch`) operates within a single session and stops on the first error by default.
+
+## Capability identity
+
+- Device IDs MUST be stable within provider scope.
+- Capability names SHOULD follow `<domain>.<action>` lowercase dot-notation (e.g. `camera.capture`, `sensor.read`).
+- Versioning MAY be done via suffix (e.g. `robotic_arm.move.v2`).
+- Stable domain vocabulary: `camera`, `radio`, `sensor`, `phone`, `robot`, `lab`, `ui`, `file`, `system`, `app`, `input`, `screen`.
+
+## Capability input schema
+
+Every capability MUST include a JSON Schema (draft-07+) under `capabilities[].schema`. Agents MUST validate request params against this schema before calling `execute`. The cloud also validates params against the schema before forwarding to the node.
+
+```json
+{
+  "name": "camera.capture",
+  "description": "Capture a still image from the camera.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "resolution": {
+        "type": "string",
+        "enum": ["720p", "1080p", "4k"]
+      }
+    }
+  },
+  "instructions": "Call this capability to take a photo. Specify resolution if the task requires a particular quality."
+}
+```
+
+## Access control and agent identity
+
+### Bearer token authentication
+
+All agent-facing endpoints require: `Authorization: Bearer <agent_api_key>`
+
+Provider-facing endpoints require a separate `provider_api_key` bearer token. The two key spaces are distinct.
+
+### Agent identity headers (optional)
+
+Agents may supply self-asserted identity context for access-policy enforcement:
+
+| Header | Description |
+|---|---|
+| `x-agent-id` | Stable identifier for the calling agent or owner |
+| `x-agent-org-id` | Organisation the agent belongs to |
+| `x-agent-roles` | Comma-separated role list |
+
+<Warning>
+These headers are self-asserted and not cryptographically bound to the bearer token in v1. Treat them as advisory trust signals rather than verified identity. Full JWT or mTLS binding is planned for a future security profile.
+</Warning>
+
+### Device access policy
+
+```json
+{
+  "visibility": "shared",
+  "allowed_agents": ["agent-id-1"],
+  "allowed_orgs": ["org-id-1"],
+  "denied_agents": ["blocked-agent"]
+}
+```
+
+Policy resolution order:
+
+1. If the agent is the device owner (`x-agent-id === owner_id`), access is always granted.
+2. If the agent is on `denied_agents`, access is always rejected (HTTP 403).
+3. If `visibility: public`, any authenticated agent may access.
+4. If `visibility: shared`, the agent or their org must appear in `allowed_agents` / `allowed_orgs`.
+5. If `visibility: private`, only the owner has access.
+
+## W3C WoT alignment
+
+OAHL capabilities map to the W3C Web of Things `ActionAffordance`. Two optional fields provide forward interoperability without mandating JSON-LD today:
+
+```typescript
+// packages/core/src/types.ts
+interface Capability {
+  semantic_type?: string;  // e.g. "ActionAffordance" from WoT vocabulary
+  // ...
+}
+
+interface Device {
+  semantic_context?: string[];  // W3C WoT @context alignment strings
+  // ...
+}
+```
+
+### Declaring WoT semantic metadata
+
+```json
+{
+  "name": "camera.capture",
+  "semantic_type": "ActionAffordance",
+  "description": "Capture an image from the camera."
+}
+```
+
+```json
+{
+  "id": "usb-camera-01",
+  "semantic_context": ["https://www.w3.org/2019/wot/td/v1"]
+}
+```
+
+These fields propagate through node registration heartbeats and are surfaced in `GET /v1/capabilities` responses.
+
+### Deliberate divergences from WoT TD
+
+| Aspect | W3C WoT TD | OAHL | Rationale |
+|---|---|---|---|
+| Description format | JSON-LD with `@context`, `@type` | Plain JSON | JSON-LD adds tooling complexity without benefit for LLM agents |
+| Affordance model | Property, Action, Event | Single `Capability` (Action-only in v1) | Agents request executable actions; reads and streams are modelled as capabilities |
+| Protocol binding | Per-affordance `forms[]` | `TransportAttachmentProfile` on adapter/node side | Transport is a node-local concern; agents never select protocols |
+| Discovery | W3C Thing Directory | OAHL Cloud Registry | Registry is agent-auth-gated and access-policy-aware |
+| Session model | Stateless | Exclusive session per device | Cooperative locking for multi-agent hardware access |
+
+### What OAHL adds that WoT does not cover
+
+| OAHL concept | WoT equivalent |
+|---|---|
+| `hardware.baseline` fallback capability | None — OAHL-specific LLM affordance |
+| `instructions` field (natural language for agents) | `description` only; no agent-specific instruction channel |
+| `agent_recovery_hints` in error responses | None |
+| Session exclusivity (one agent per device) | No equivalent; WoT is stateless |
+| Device access policy (visibility, allow/deny lists) | No equivalent in WoT TD |
+| Cloud relay with WebSocket fast-path + HTTP fallback | No equivalent; WoT assumes direct-to-device connectivity |
+
+<Tip>
+The forward interoperability path is: keep `semantic_type` and `semantic_context` fields populated, and add a `GET /v1/things/{device_id}` endpoint in a future release that renders a WoT-compatible Thing Description from OAHL capabilities.
+</Tip>
+
+## Standardization roadmap
+
+OAHL progresses toward MCP-like hardware interoperability maturity through six phases:
+
+<AccordionGroup>
+  <Accordion title="Phase 1 — Protocol stabilization (v1.0)" defaultOpen={true}>
+    Freeze required fields in the execution result schema and attachment profile schema. Publish the error-code catalog. Mark protocol docs as `Stable`.
+
+    **Exit gate:** No breaking changes to v1 required fields across two consecutive releases.
+  </Accordion>
+  <Accordion title="Phase 2 — Conformance program">
+    CLI + CI conformance test suite covering capability schema validation, session exclusivity, deterministic reservation, and execution envelope validity. Certification levels: `Core-Compliant`, `Transport-Compliant`, `Security-Compliant`.
+
+    **Exit gate:** Conformance badge available for adapters and nodes.
+  </Accordion>
+  <Accordion title="Phase 3 — Transport plugin ecosystem">
+    First-party reference transport plugins: `transport-serial`, `transport-adb`, `transport-mqtt`, `transport-ble`, `transport-tcp`. Transport selection policy and secure-first fallback rules.
+
+    **Exit gate:** At least 3 transport plugins production-tested; transport error codes standardized.
+  </Accordion>
+  <Accordion title="Phase 4 — Security, trust, and attestation">
+    Node identity profile (signed metadata), device trust levels (attested vs self-declared), key rotation policy, security event audit schema.
+
+    **Exit gate:** Security profile published with mandatory controls for production deployments.
+  </Accordion>
+  <Accordion title="Phase 5 — SDK and developer experience parity">
+    JS and Python SDK parity for node + cloud clients. Generated types from OpenAPI/schemas. One-command adapter scaffold with transport-aware structure.
+
+    **Exit gate:** New adapter developers can ship a compliant adapter with minimal custom boilerplate.
+  </Accordion>
+  <Accordion title="Phase 6 — Governance and compatibility policy">
+    Versioning policy for protocol/schema changes, deprecation windows, RFC process for protocol evolution, reference implementation changelog.
+
+    **Exit gate:** External ecosystem can plan upgrades predictably.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+Current maturity: **Foundation complete, ecosystem incomplete**. Phase 1 is in progress. The immediate next steps are: finalize the v1 error code catalog, build the first conformance test runner, ship the first reference transport plugin, and add a CI gate requiring execution envelope compliance.
+</Note>
+
+## Protocol evolution
+
+- `schema_version` controls execution-envelope compatibility.
+- Protocol-breaking changes require a new major protocol version.
+- New optional fields are allowed as backward-compatible extensions.
+- The RFC process for protocol evolution is planned (not yet established).

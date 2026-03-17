@@ -1,0 +1,100 @@
+---
+title: "Introduction"
+description: "Open Agent Hardware Layer — expose real physical hardware to AI agents through standardized APIs."
+---
+
+## What is OAHL?
+
+**Open Agent Hardware Layer (OAHL)** is an open-source framework that bridges the gap between AI agents and the physical world. It lets hardware owners connect real devices — cameras, SDRs, sensors, phones, robots — to a local node, declare their capabilities, and make them accessible to AI agent systems in a safe, consistent way.
+
+AI agents can already use software tools and cloud APIs. OAHL adds the missing layer: **physical hardware**.
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Connect your first hardware device in under 5 minutes
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Understand how nodes, adapters, and the cloud registry fit together
+  </Card>
+  <Card title="Agent Integration" icon="robot" href="/agents/overview">
+    Integrate hardware into your AI agent workflows
+  </Card>
+  <Card title="API Reference" icon="code" href="/api-reference/discovery">
+    Explore the full REST API surface
+  </Card>
+</CardGroup>
+
+## Core concepts
+
+<AccordionGroup>
+  <Accordion title="Node">
+    A **Node** is a service installed on a machine that has physical hardware attached. It runs the OAHL server process, loads adapter plugins, and registers itself with the Cloud Registry so remote agents can discover it.
+  </Accordion>
+  <Accordion title="Adapter">
+    An **Adapter** is a device-specific plugin that implements the standard `Adapter` interface. It translates OAHL standard commands (e.g. `camera.capture`) into the hardware-specific protocol calls needed to actually operate the device.
+  </Accordion>
+  <Accordion title="Capability">
+    A **Capability** is a standardized, named action that a device can perform — for example `camera.capture`, `radio.scan`, or `sensor.read`. Capabilities have a JSON Schema that describes their accepted parameters.
+  </Accordion>
+  <Accordion title="Session">
+    A **Session** is an exclusive allocation of a hardware resource for a single agent request. While a session is active, no other agent can interrupt or send contradictory commands to that device.
+  </Accordion>
+  <Accordion title="Policy">
+    A **Policy** is a declarative set of rules that governs what capabilities an agent is allowed to execute on a device, and which agents are allowed to access it at all. Policies are defined per-device in `oahl-config.json`.
+  </Accordion>
+  <Accordion title="Cloud Registry">
+    The **Cloud Registry** is the central hub where local nodes register themselves so remote agents can discover and request hardware globally. The registry handles relay — agents connect to the cloud, not directly to your node.
+  </Accordion>
+</AccordionGroup>
+
+## Who is OAHL for?
+
+<CardGroup cols={3}>
+  <Card title="Hardware Owners" icon="microchip">
+    Connect your webcam, SDR, sensor, phone, or robot to the OAHL network and expose it safely to agents worldwide.
+  </Card>
+  <Card title="Agent Developers" icon="brain">
+    Give your AI agents real-world perception and actuation capabilities without writing custom hardware integrations.
+  </Card>
+  <Card title="Platform Builders" icon="building">
+    Build agent-to-hardware marketplaces on top of the OAHL Cloud infrastructure and adapter registry.
+  </Card>
+</CardGroup>
+
+## How it works
+
+```
+AI Agent
+   │
+   │  REST API / MCP / SDK
+   ▼
+Cloud Registry (oahl.onrender.com)
+   │
+   │  WebSocket relay
+   ▼
+OAHL Node (your machine)
+   │
+   │  Adapter plugin
+   ▼
+Physical Hardware (camera, SDR, sensor…)
+```
+
+1. An agent calls `GET /v1/capabilities` to discover available hardware.
+2. It calls `POST /v1/requests` to reserve an exclusive session on a device.
+3. It calls `POST /v1/sessions/{id}/execute` with the capability name and parameters.
+4. The cloud relays the command to your local node via WebSocket.
+5. The adapter plugin executes the command on the physical hardware and returns the result.
+6. The agent calls `POST /v1/sessions/{id}/stop` to release the device.
+
+## Repository layout
+
+| Directory | Contents |
+|---|---|
+| `packages/cli` | `oahl` CLI tool — setup wizard, TUI, adapter scaffolding |
+| `packages/server` | Local node HTTP server |
+| `packages/core` | Domain models, `PolicyEngine`, `SessionManager` |
+| `packages/sdk-js` | JavaScript/TypeScript SDK (`@oahl/sdk`) |
+| `packages/cloud` | Cloud Registry / relay server |
+| `adapters/` | Built-in hardware adapter packages |
+| `sdk-python/` | Lightweight Python client |
+| `docs/` | Source documentation files |

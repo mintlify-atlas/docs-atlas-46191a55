@@ -1,0 +1,275 @@
+---
+title: "Execution"
+description: "Execute hardware capabilities within an active session."
+---
+
+Execution endpoints relay commands to the hardware node. The transport path (WebSocket fast-path or HTTP long-poll fallback) is transparent to the caller. Response headers report which relay mode was used.
+
+<Note>
+  Both endpoints require an active session. Obtain a `session_id` first via `POST /v1/requests`.
+</Note>
+
+---
+
+## POST /v1/sessions/{session_id}/execute
+
+Executes a single capability on the device associated with the session.
+
+### Authentication
+
+`Authorization: Bearer <agent_api_key>`
+
+### Path parameters
+
+<ParamField path="session_id" type="string" required>
+  Opaque session identifier returned by `POST /v1/requests`.
+</ParamField>
+
+### Request body
+
+<ParamField body="capability" type="string" required>
+  The capability to invoke.
+
+  Example: `camera.capture`
+</ParamField>
+
+<ParamField body="params" type="object">
+  Arguments validated against the capability's JSON Schema. Refer to the `schema` field in the `CapabilityDescriptor` for the expected shape.
+</ParamField>
+
+<ParamField body="timeout_ms" type="integer">
+  Override the default relay timeout in milliseconds.
+
+  Example: `30000`
+</ParamField>
+
+### Response headers — 200
+
+| Header | Values | Description |
+|--------|--------|-------------|
+| `x-oahl-relay-mode` | `websocket`, `websocket-late`, `polling` | Transport path used by the relay. |
+| `x-oahl-request-id` | string | Unique ID for this relay request. |
+
+### Response — 200
+
+Returns an `ExecutionResult` envelope. See [ExecutionResult schema](#executionresult-envelope) below.
+
+### Response headers — 504
+
+| Header | Values |
+|--------|--------|
+| `x-oahl-relay-mode` | `websocket-timeout`, `polling-timeout` |
+
+### Error responses
+
+| Status | Meaning |
+|--------|----------|
+| 404 | Session not found or expired. |
+| 504 | Hardware node did not respond within the timeout window. |
+
+### Example
+
+```bash
+curl -X POST "https://oahl.onrender.com/v1/sessions/sess-3f7a2c1d-8b2e-4c7f-a1d9-0e5f6c3b2a1d/execute" \
+  -H "Authorization: Bearer <agent_api_key>" \
+  -H "x-agent-id: agent-abc123" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "capability": "camera.capture",
+    "params": {
+      "resolution": "1080p"
+    },
+    "timeout_ms": 30000
+  }'
+```
+
+```json
+{
+  "schema_version": "1.0",
+  "operation_id": "cmd-3a7f92bc-1234",
+  "status": "success",
+  "completion": {
+    "done": true,
+    "state": "completed",
+    "progress_pct": 100
+  },
+  "capability": "camera.capture",
+  "device_id": "cam-001",
+  "timestamp": "2026-03-17T12:00:00.000Z",
+  "data": {
+    "image_url": "https://storage.example.com/captures/img-001.jpg",
+    "width": 1920,
+    "height": 1080
+  },
+  "error": null,
+  "meta": {
+    "adapter_id": "axis-p3245",
+    "relay_latency_ms": 42,
+    "node_id": "node-west-1"
+  }
+}
+```
+
+---
+
+## POST /v1/sessions/{session_id}/execute-batch
+
+Executes multiple capabilities sequentially in a single relay call, reducing round-trip overhead. The batch stops on the first error by default.
+
+### Authentication
+
+`Authorization: Bearer <agent_api_key>`
+
+### Path parameters
+
+<ParamField path="session_id" type="string" required>
+  Opaque session identifier returned by `POST /v1/requests`.
+</ParamField>
+
+### Request body
+
+<ParamField body="commands" type="object[]" required>
+  Ordered list of capability execution requests.
+
+  <Expandable title="command properties">
+    <ParamField body="capability" type="string" required>
+      The capability to invoke.
+    </ParamField>
+    <ParamField body="params" type="object">
+      Arguments for this capability.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="timeout_ms" type="integer">
+  Total timeout for the entire batch in milliseconds. The relay scales this with batch size.
+</ParamField>
+
+### Response — 200
+
+Returns an `ExecutionResult` envelope. See [ExecutionResult schema](#executionresult-envelope) below.
+
+Response headers are the same as `execute`: `x-oahl-relay-mode` and `x-oahl-request-id`.
+
+### Error responses
+
+| Status | Meaning |
+|--------|----------|
+| 400 | `commands` field missing or not an array. |
+| 404 | Session not found. |
+
+### Example
+
+```bash
+curl -X POST "https://oahl.onrender.com/v1/sessions/sess-3f7a2c1d-8b2e-4c7f-a1d9-0e5f6c3b2a1d/execute-batch" \
+  -H "Authorization: Bearer <agent_api_key>" \
+  -H "x-agent-id: agent-abc123" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "commands": [
+      {
+        "capability": "camera.capture",
+        "params": { "resolution": "1080p" }
+      },
+      {
+        "capability": "camera.zoom",
+        "params": { "level": 2 }
+      }
+    ],
+    "timeout_ms": 60000
+  }'
+```
+
+---
+
+## ExecutionResult envelope
+
+All execution responses use this canonical envelope.
+
+<ResponseField name="schema_version" type="string" required>
+  Protocol version. Always `"1.0"` in the current release.
+</ResponseField>
+
+<ResponseField name="operation_id" type="string" required>
+  Unique ID for this execution operation, assigned by the cloud relay.
+
+  Example: `cmd-3a7f92bc-1234`
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Overall execution status. One of: `accepted`, `in_progress`, `success`, `error`.
+</ResponseField>
+
+<ResponseField name="completion" type="object" required>
+  Completion state for this operation.
+
+  <Expandable title="properties">
+    <ResponseField name="done" type="boolean" required>
+      Whether the operation has finished (succeeded or failed).
+    </ResponseField>
+    <ResponseField name="state" type="string" required>
+      One of: `queued`, `in_progress`, `completed`, `failed`.
+    </ResponseField>
+    <ResponseField name="progress_pct" type="number">
+      Completion percentage from 0 to 100. Present for long-running capabilities.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="capability" type="string" required>
+  The capability that was invoked.
+
+  Example: `camera.capture`
+</ResponseField>
+
+<ResponseField name="device_id" type="string" required>
+  ID of the device that executed the capability.
+</ResponseField>
+
+<ResponseField name="timestamp" type="string" required>
+  ISO 8601 datetime when the result was produced.
+</ResponseField>
+
+<ResponseField name="data" type="any">
+  Capability-specific structured payload. Shape varies by capability. `null` on error.
+</ResponseField>
+
+<ResponseField name="error" type="object">
+  Present when `status` is `error`. `null` on success.
+
+  <Expandable title="properties">
+    <ResponseField name="code" type="string">
+      Machine-readable error code.
+
+      Example: `EXECUTION_FAILED`
+    </ResponseField>
+    <ResponseField name="message" type="string">
+      Human-readable error description.
+    </ResponseField>
+    <ResponseField name="retryable" type="boolean">
+      Whether the operation can be retried without changes.
+    </ResponseField>
+    <ResponseField name="agent_recovery_hints" type="string[]">
+      Natural-language recovery suggestions for the calling agent.
+    </ResponseField>
+    <ResponseField name="details" type="any">
+      Additional error context. May be `null`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="meta" type="object">
+  Optional relay and adapter metadata.
+
+  <Expandable title="properties">
+    <ResponseField name="adapter_id" type="string">
+      Identifier of the adapter that executed the capability.
+    </ResponseField>
+    <ResponseField name="relay_latency_ms" type="number">
+      Time in milliseconds between command dispatch and result receipt at the cloud layer.
+    </ResponseField>
+    <ResponseField name="node_id" type="string">
+      Node that processed the command.
+    </ResponseField>
+  </Expandable>
+</ResponseField>

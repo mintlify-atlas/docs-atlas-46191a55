@@ -1,0 +1,200 @@
+---
+title: "WebSocket Relay"
+description: "Real-time bidirectional relay between hardware nodes and the cloud."
+---
+
+The cloud exposes a WebSocket endpoint for real-time command dispatch and result delivery. Nodes should prefer WebSocket over HTTP polling for lower latency.
+
+<Note>
+  An AsyncAPI specification for this channel is planned. For now, the full message contract is documented below.
+</Note>
+
+---
+
+## Channel: wss://\<host\>/ws/provider
+
+### Connection
+
+Connect using a standard WebSocket client with the following parameters:
+
+**URL format:**
+```
+wss://oahl.onrender.com/ws/provider?node_id=<your_node_id>
+```
+
+**Query parameters:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `node_id` | Yes | The node ID registered via `POST /v1/provider/nodes/register`. |
+
+**Connection headers:**
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `Authorization` | Yes | `Bearer <provider_api_key>` |
+| `x-node-id` | Yes | The same `node_id` as the query parameter. |
+
+### Example connection (JavaScript)
+
+```javascript
+const ws = new WebSocket(
+  "wss://oahl.onrender.com/ws/provider?node_id=node-west-1",
+  {
+    headers: {
+      "Authorization": "Bearer <provider_api_key>",
+      "x-node-id": "node-west-1"
+    }
+  }
+);
+```
+
+---
+
+## Cloud → Node messages
+
+The cloud sends commands to the node over the WebSocket connection.
+
+### command
+
+Dispatches a single capability execution request.
+
+```json
+{
+  "type": "command",
+  "payload": {
+    "requestId": "cmd-3a7f92bc-1234",
+    "deviceId": "cam-001",
+    "capability": "camera.capture",
+    "params": {
+      "resolution": "1080p"
+    },
+    "dispatchedAt": "2026-03-17T12:00:00.000Z"
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Always `command`. |
+| `payload.requestId` | string | Unique ID for this command. Echo this in the result. |
+| `payload.deviceId` | string | Target device ID. |
+| `payload.capability` | string | Capability to invoke. |
+| `payload.params` | object | Arguments for the capability. |
+| `payload.dispatchedAt` | string | ISO 8601 timestamp when the cloud dispatched the command. |
+
+### command-batch
+
+Dispatches multiple capability execution requests to run sequentially.
+
+```json
+{
+  "type": "command-batch",
+  "payload": {
+    "requestId": "cmd-batch-5f8a1b2c",
+    "deviceId": "cam-001",
+    "commands": [
+      { "capability": "camera.capture", "params": { "resolution": "1080p" } },
+      { "capability": "camera.zoom", "params": { "level": 2 } }
+    ],
+    "dispatchedAt": "2026-03-17T12:00:00.000Z"
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Always `command-batch`. |
+| `payload.requestId` | string | Unique ID for this batch. Echo this in the result. |
+| `payload.deviceId` | string | Target device ID. |
+| `payload.commands` | object[] | Ordered list of `{ capability, params }` objects. |
+| `payload.dispatchedAt` | string | ISO 8601 timestamp when the cloud dispatched the batch. |
+
+---
+
+## Node → Cloud messages
+
+The node sends results back to the cloud after executing a command.
+
+### result
+
+Delivers the execution result for a command or command-batch.
+
+```json
+{
+  "type": "result",
+  "requestId": "cmd-3a7f92bc-1234",
+  "result": {
+    "schema_version": "1.0",
+    "operation_id": "cmd-3a7f92bc-1234",
+    "status": "success",
+    "completion": {
+      "done": true,
+      "state": "completed",
+      "progress_pct": 100
+    },
+    "capability": "camera.capture",
+    "device_id": "cam-001",
+    "timestamp": "2026-03-17T12:00:05.000Z",
+    "data": {
+      "image_url": "https://storage.example.com/captures/img-001.jpg"
+    },
+    "error": null,
+    "meta": {
+      "adapter_id": "axis-p3245",
+      "relay_latency_ms": 38,
+      "node_id": "node-west-1"
+    }
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Always `result`. |
+| `requestId` | string | The `requestId` from the command being responded to. |
+| `result` | object | Full `ExecutionResult` envelope. See [Execution](/api-reference/execution#executionresult-envelope). |
+
+---
+
+## Reconnection guidance
+
+<Tip>
+  Implement automatic reconnection with exponential backoff. A dropped connection does not cancel in-flight commands — complete any running execution before reconnecting.
+</Tip>
+
+1. **Prefer WebSocket** — lower latency than HTTP polling, real-time command delivery.
+2. **Fall back to HTTP poll** — if the WebSocket connection cannot be established or is lost, use `GET /v1/provider/nodes/{id}/poll` to receive commands and `POST /v1/provider/nodes/results` to submit results.
+3. **Heartbeat independently** — continue sending `POST /v1/provider/nodes/register` every 15 seconds regardless of which transport is active.
+
+```javascript
+function connect() {
+  const ws = new WebSocket(
+    "wss://oahl.onrender.com/ws/provider?node_id=node-west-1",
+    {
+      headers: {
+        "Authorization": "Bearer <provider_api_key>",
+        "x-node-id": "node-west-1"
+      }
+    }
+  );
+
+  ws.on("message", (data) => {
+    const msg = JSON.parse(data);
+    if (msg.type === "command" || msg.type === "command-batch") {
+      handleCommand(msg).then((result) => {
+        ws.send(JSON.stringify({
+          type: "result",
+          requestId: msg.payload.requestId,
+          result
+        }));
+      });
+    }
+  });
+
+  ws.on("close", () => {
+    // Fall back to HTTP polling, then retry WebSocket
+    setTimeout(connect, 2000);
+  });
+}
+```

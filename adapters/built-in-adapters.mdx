@@ -1,0 +1,258 @@
+---
+title: "Built-in adapters"
+description: "Installation, configuration, and capability reference for all official OAHL adapter packages."
+---
+
+OAHL ships five official first-party adapter packages. Each is published to npm under the `@oahl` scope and listed in the [Adapter Marketplace](https://oahl.org/marketplace).
+
+## `@oahl/adapter-mock`
+
+A fully in-memory virtual device adapter for testing and development. It requires no physical hardware and ships as the default plugin in every new `oahl-config.json`.
+
+**Install**
+
+```bash
+oahl install @oahl/adapter-mock
+```
+
+**Configuration in `oahl-config.json`**
+
+```json
+{
+  "plugins": ["@oahl/adapter-mock"],
+  "devices": [
+    {
+      "id": "mock-device-1",
+      "type": "mock",
+      "adapter": "mock-adapter",
+      "capabilities": ["ping", "hardware.baseline"]
+    }
+  ]
+}
+```
+
+**Capabilities**
+
+| Capability | Description | Key parameters |
+|---|---|---|
+| `ping` | Echoes back a message to confirm the adapter is reachable | `message` (string) |
+| `hardware.baseline` | Fallback for ad-hoc intents; routes `ping`-like intents automatically | `intent` (string, required), `params` (object) |
+
+<Note>
+  `@oahl/adapter-mock` is automatically added to your `plugins` list by `oahl init`. You do not need to install it separately on a new node.
+</Note>
+
+---
+
+## `@oahl/adapter-usb-camera`
+
+Controls a USB camera accessible via V4L2 (Linux) or the system video device layer. Supports image capture at selectable resolutions.
+
+**Install**
+
+```bash
+oahl install @oahl/adapter-usb-camera
+```
+
+**Configuration in `oahl-config.json`**
+
+```json
+{
+  "plugins": ["@oahl/adapter-usb-camera"],
+  "devices": [
+    {
+      "id": "usb-cam-1",
+      "type": "camera",
+      "adapter": "usb-camera-adapter",
+      "capabilities": ["capture_image"],
+      "local_path": "/dev/video0",
+      "policy": {
+        "public": false,
+        "max_session_minutes": 30
+      }
+    }
+  ]
+}
+```
+
+**Capabilities**
+
+| Capability | Description | Key parameters |
+|---|---|---|
+| `capture_image` | Captures a JPEG image from the camera. Returns `image` as a Base64-encoded string | `resolution` — `"1080p"` or `"720p"` (default: `"720p"`) |
+| `hardware.baseline` | Fallback for capture-like intents; maps `capture`, `screenshot`, and `photo` intents to `capture_image` | `intent` (string, required), `params.resolution` (string) |
+
+**Example `capture_image` response**
+
+```json
+{
+  "image": "<base64-encoded JPEG data>",
+  "format": "jpeg",
+  "resolution": "1080p"
+}
+```
+
+<Warning>
+  The camera device must already be visible to the host OS before the OAHL node starts. On Linux, verify with `ls /dev/video*`. On macOS, the camera must be accessible via AVFoundation.
+</Warning>
+
+---
+
+## `@oahl/adapter-rtl-sdr`
+
+Controls an RTL2832U-based Software Defined Radio (SDR) dongle. Supports frequency tuning and raw IQ sample reads.
+
+**Install**
+
+```bash
+oahl install @oahl/adapter-rtl-sdr
+```
+
+**Configuration in `oahl-config.json`**
+
+```json
+{
+  "plugins": ["@oahl/adapter-rtl-sdr"],
+  "devices": [
+    {
+      "id": "rtl-sdr-1",
+      "type": "sdr",
+      "adapter": "rtl-sdr-adapter",
+      "capabilities": ["tune", "read_samples"],
+      "policy": {
+        "public": false,
+        "max_session_minutes": 30
+      }
+    }
+  ]
+}
+```
+
+**Capabilities**
+
+| Capability | Description | Key parameters |
+|---|---|---|
+| `tune` | Tunes the SDR dongle to a specific frequency | `frequencyHz` (number, required) — frequency in Hz, e.g. `100700000` for 100.7 MHz |
+| `read_samples` | Reads a batch of raw IQ samples from the currently-tuned frequency | `count` (number, default: `1024`) — number of samples to read |
+| `hardware.baseline` | Fallback; routes tuning intents to `tune` and sample intents to `read_samples` | `intent` (string, required), `params.frequencyHz` or `params.count` |
+
+**Example `tune` response**
+
+```json
+{ "success": true, "frequencyHz": 100700000 }
+```
+
+**Example `read_samples` response**
+
+```json
+{
+  "samples": [-0.23, 0.11, 0.45, ...],
+  "sampleRate": 2048000
+}
+```
+
+<Note>
+  The RTL-SDR dongle must be detectable by the system before the node starts. Verify with `rtl_test` from the `rtl-sdr` package.
+</Note>
+
+---
+
+## `@oahl/adapter-android`
+
+Exposes Android devices to AI agents over ADB. Provides over 60 capabilities spanning screen capture, UI automation, input simulation, app management, file transfer, sensors, camera, SMS, calls, and system controls.
+
+**Install**
+
+```bash
+oahl install @oahl/adapter-android
+```
+
+**Prerequisites**
+
+- Android Debug Bridge (`adb`) installed and on your `PATH`
+- Target device connected via USB with USB debugging enabled
+- Device visible in `adb devices` output
+
+**Configuration in `oahl-config.json`**
+
+```json
+{
+  "plugins": ["@oahl/adapter-android"],
+  "devices": [
+    {
+      "id": "android-phone-01",
+      "type": "mobile",
+      "adapter": "android",
+      "capabilities": ["system.info", "screen.screenshot", "system.shell"],
+      "policy": {
+        "public": false,
+        "max_session_minutes": 30
+      }
+    }
+  ]
+}
+```
+
+**Capability groups**
+
+| Group | Example capabilities |
+|---|---|
+| Screen | `screen.screenshot`, `screen.record` |
+| System | `system.info`, `system.shell`, `system.props`, `system.wifi`, `system.volume`, `system.lock`, `system.wake` |
+| Input | `input.tap`, `input.swipe`, `input.text`, `input.keyevent`, `input.drag`, `input.long_press`, `input.double_tap`, `input.pinch` |
+| App management | `app.launch`, `app.stop`, `app.install`, `app.uninstall`, `app.list`, `app.info`, `app.current`, `app.clear_data` |
+| UI automation | `ui.find`, `ui.tap_element`, `ui.scroll`, `ui.dump`, `ui.get_text`, `ui.clear_and_type`, `ui.wait_for_element` |
+| Sensors | `sensor.battery`, `sensor.gps`, `sensor.accelerometer`, `sensor.gyroscope`, `sensor.light`, `sensor.list` |
+| Camera | `camera.photo`, `camera.video`, `camera.list` |
+| Files | `file.push`, `file.pull`, `file.list`, `file.read`, `file.delete`, `file.exists` |
+| SMS & calls | `sms.send`, `sms.list`, `call.initiate`, `call.end`, `call.log` |
+| Notifications | `notification.send`, `notification.list`, `notification.dismiss_all` |
+| Microphone | `microphone.record` |
+| Clipboard | `system.clipboard.get`, `system.clipboard.set` |
+
+<Warning>
+  `system.shell` gives an agent the ability to run arbitrary `adb shell` commands. Restrict access with an explicit `access_policy.allowed_agents` list when exposing this capability.
+</Warning>
+
+---
+
+## `@oahl/adapter-arduino`
+
+Connects to Arduino boards and other UART/serial devices via a serial port. Capabilities are defined by your Arduino firmware — the adapter provides the serial transport layer.
+
+**Install**
+
+```bash
+oahl install @oahl/adapter-arduino
+```
+
+**Prerequisites**
+
+- Arduino connected via USB
+- Serial port visible as `/dev/ttyACM0` or `/dev/ttyUSB0` (Linux), `COM3` (Windows), or `/dev/tty.usbmodem*` (macOS)
+
+**Configuration in `oahl-config.json`**
+
+```json
+{
+  "plugins": ["@oahl/adapter-arduino"],
+  "devices": [
+    {
+      "id": "arduino-uno-01",
+      "type": "serial-device",
+      "adapter": "arduino",
+      "capabilities": ["device.read", "device.write"],
+      "serial_port": "/dev/ttyACM0",
+      "baud_rate": 9600,
+      "policy": {
+        "public": false,
+        "max_session_minutes": 30
+      }
+    }
+  ]
+}
+```
+
+<Tip>
+  Use `oahl scan-ports` to detect your Arduino's serial port path automatically. The command identifies serial devices and prints the suggested config snippet.
+</Tip>

@@ -1,0 +1,157 @@
+---
+title: "Docker deployment"
+description: "Deploy your OAHL node in a sandboxed Docker container with hardware passthrough."
+---
+
+Docker is the recommended way to run an OAHL node in production. It provides two key advantages:
+
+- **Native bindings without host pollution.** Many hardware adapters — particularly serial and BLE — require native C++ packages (such as `serialport`) to be compiled from source. Docker ships with all build tools (`build-essential`, `python3`, `libusb`, `ffmpeg`) pre-installed. You never need to install Visual Studio Build Tools or Python on your host machine.
+- **Sandboxing.** The agent accesses only the specific hardware device you pass with `--device`. It cannot read your host filesystem or reach other devices.
+
+## Full deployment walkthrough
+
+<Steps>
+  <Step title="Install Docker">
+    Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) on your machine, or install the Docker Engine on Linux:
+
+    ```bash
+    curl -fsSL https://get.docker.com | sh
+    ```
+  </Step>
+
+  <Step title="Create your configuration file">
+    Run the interactive setup wizard to generate `oahl-config.json`:
+
+    ```bash
+    npm install -g @fredabila/oahl
+    oahl init
+    ```
+
+    Or write `oahl-config.json` manually. See the [configuration reference](/hardware-owners/configuration) for all available fields.
+  </Step>
+
+  <Step title="Pull the OAHL node image">
+    ```bash
+    docker pull oahl/node:latest
+    ```
+  </Step>
+
+  <Step title="Run the container">
+    Mount your config file and pass the hardware device into the container.
+
+    **USB camera example:**
+
+    ```bash
+    docker run -d \
+      --name oahl-node \
+      -p 8080:8080 \
+      -v $(pwd)/oahl-config.json:/app/oahl-config.json \
+      --device=/dev/video0 \
+      oahl/node:latest
+    ```
+
+    The `--device` flag grants the container access to exactly one device node on your host — nothing more.
+  </Step>
+
+  <Step title="Verify the node is running">
+    ```bash
+    curl http://localhost:8080/capabilities
+    ```
+
+    A JSON array of available capabilities is returned when the node is healthy.
+  </Step>
+</Steps>
+
+## Docker Compose
+
+For persistent or multi-device deployments, use Docker Compose. The following `docker-compose.yml` is the canonical example from the OAHL repository:
+
+```yaml docker-compose.yml
+version: '3.8'
+
+services:
+  oahl-node:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: fredabila/oahl-node:latest
+    container_name: oahl-node
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+    volumes:
+      # Mount the local config file into the container
+      - ./oahl-config.json:/app/packages/server/oahl-config.json
+    privileged: true
+    # devices:
+      # Uncomment and map hardware directly to the container
+      # - /dev/bus/usb:/dev/bus/usb
+      # - /dev/ttyACM0:/dev/ttyACM0  # For Arduino
+      # - /dev/video0:/dev/video0    # For Webcams
+```
+
+Start with:
+
+```bash
+docker compose up -d
+```
+
+<Note>
+  The `privileged: true` flag is a convenient default that grants full device access. For production, replace it by uncommenting specific `devices:` entries for only the hardware you intend to expose.
+</Note>
+
+## Hardware passthrough with `--device`
+
+The `--device` flag maps a host device node into the container without granting full root access to the host.
+
+| Hardware | Host path | `--device` flag |
+|---|---|---|
+| USB camera | `/dev/video0` | `--device=/dev/video0` |
+| Arduino (USB serial) | `/dev/ttyACM0` | `--device=/dev/ttyACM0` |
+| Generic serial | `/dev/ttyUSB0` | `--device=/dev/ttyUSB0` |
+| All USB devices | `/dev/bus/usb` | `--device=/dev/bus/usb:/dev/bus/usb` |
+
+To find your device's path before running Docker:
+
+```bash
+oahl scan-ports
+# or
+ls /dev/video* /dev/ttyACM* /dev/ttyUSB*
+```
+
+## Volume mounts
+
+| Mount | Purpose |
+|---|---|
+| `./oahl-config.json:/app/packages/server/oahl-config.json` | Required. Provides your node configuration. |
+
+The config file is read on container startup. To apply changes, restart the container:
+
+```bash
+docker restart oahl-node
+```
+
+## Environment variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `PORT` | Port the OAHL HTTP server listens on inside the container | `3000` |
+| `OAHL_OWNER_EMAIL` | Developer Portal email, injected by `oahl start` | — |
+| `OAHL_OWNER_PIN` | Developer Portal 6-digit PIN, injected by `oahl start` | — |
+| `OAHL_AGENT_API_KEY` | Agent API key used by the MCP server (`oahl mcp`) | — |
+
+<Warning>
+  Do not hardcode credentials in `docker-compose.yml`. Use a `.env` file or Docker secrets and reference them with `${VARIABLE_NAME}` syntax.
+</Warning>
+
+## What the Dockerfile installs
+
+The official `Dockerfile` is based on `node:20-bullseye-slim` and pre-installs the following system packages so you never have to:
+
+- `build-essential`, `python3` — required by `node-gyp` for native serial/BLE bindings
+- `libusb-1.0-0`, `libusb-1.0-0-dev` — required by RTL-SDR adapters
+- `rtl-sdr` — RTL-SDR userspace driver
+- `ffmpeg`, `v4l-utils` — camera and video streaming support
+- `udev` — Linux device event mapping

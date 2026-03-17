@@ -1,0 +1,69 @@
+---
+title: "Hardware Owner Guide"
+description: "Connect your physical hardware to OAHL and expose it to AI agents anywhere in the world."
+---
+
+OAHL lets you connect physical devices to a local node, declare their capabilities, and make them discoverable by AI agents globally — without ever exposing your hardware directly to the public internet.
+
+When your node starts, it registers itself with the Cloud Registry over a secure outbound connection. Agents connect to the registry, not to your machine. You retain full control over which agents can access which devices and for how long.
+
+## What hardware owners can do
+
+- Expose USB cameras, RTL-SDR radios, Android phones, Arduino boards, and custom serial devices to agents
+- Define per-device capability policies (public, shared, or private)
+- Set session time limits and restrict which agents or organizations have access
+- Run a fully local, offline node with no cloud dependency
+- Use Docker for sandboxed, zero-host-pollution deployments
+
+## Supported hardware types
+
+| Type | Adapter package | Example devices |
+|---|---|---|
+| USB camera | `@oahl/adapter-usb-camera` | Any V4L2-compatible webcam (`/dev/video0`) |
+| RTL-SDR radio | `@oahl/adapter-rtl-sdr` | RTL-SDR v3, RTL-SDR Blog, NooElec NESDR |
+| Android phone | `@oahl/adapter-android` | Any ADB-enabled Android device |
+| Arduino / serial | `@oahl/adapter-custom` | Arduino Uno, Nano, Mega; any `ttyACM`/`ttyUSB` device |
+| Mock / virtual | `@oahl/adapter-mock` | Local testing and development |
+| Custom serial | `@oahl/adapter-custom` | Any UART/serial device |
+
+## Requirements
+
+### Operating system
+
+OAHL nodes run on Linux, macOS, and Windows. Linux is recommended for production use because USB and serial device paths (`/dev/video0`, `/dev/ttyACM0`) are easier to pass through to Docker containers.
+
+### Hardware prerequisites
+
+The host machine must already have access to the hardware before OAHL can expose it. OAHL wraps vendor drivers in a standard capability interface — it does not replace them.
+
+- **Camera:** Device visible as `/dev/video0` (Linux) or accessible via `AVFoundation` (macOS)
+- **RTL-SDR:** Detectable by `rtl_test` from the `rtl-sdr` package
+- **Android:** Device connected via USB with ADB enabled; accessible via `adb devices`
+- **Arduino / serial:** Port visible as `/dev/ttyACM0` or `/dev/ttyUSB0` (Linux), `COM3` (Windows), or `/dev/tty.usbmodem*` (macOS)
+
+### Software prerequisites
+
+- [Node.js](https://nodejs.org) v20 or later (for npm-based setup)
+- [Docker](https://www.docker.com) (recommended for production)
+- OAHL CLI: `npm install -g @fredabila/oahl`
+
+<Note>
+  You can run OAHL completely offline. Set `cloud_url` to an empty string in your config to skip cloud registration. Agents on your local network can still access hardware directly via `http://localhost:3000`.
+</Note>
+
+## In this section
+
+<CardGroup cols={2}>
+  <Card title="Configuration reference" icon="file-code" href="/hardware-owners/configuration">
+    Full reference for every field in `oahl-config.json`, including device policies and access control.
+  </Card>
+  <Card title="Docker deployment" icon="docker" href="/hardware-owners/docker">
+    Deploy your OAHL node in a sandboxed Docker container with hardware passthrough.
+  </Card>
+  <Card title="CLI reference" icon="terminal" href="/hardware-owners/cli-reference">
+    Every `oahl` CLI command: login, init, start, scan-ports, tui, and more.
+  </Card>
+  <Card title="Adapter marketplace" icon="plug" href="https://oahl.org/marketplace">
+    Browse community-contributed hardware adapters for cameras, radios, phones, and more.
+  </Card>
+</CardGroup>
