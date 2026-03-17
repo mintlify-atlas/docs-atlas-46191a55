@@ -1,0 +1,120 @@
+{
+  "projectType": "framework",
+  "projectName": "OAHL — Open Agent Hardware Layer",
+  "projectDescription": "An open-source framework that exposes real physical hardware capabilities to AI agents through standardized APIs, sessions, and pluggable adapters.",
+  "theme": "palm",
+  "primaryColor": "#c57253",
+  "lightColor": "#e2b4a4",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Hardware Owners",
+            "pages": [
+              "hardware-owners/overview",
+              "hardware-owners/configuration",
+              "hardware-owners/docker",
+              "hardware-owners/cli-reference"
+            ]
+          },
+          {
+            "group": "Adapter Development",
+            "pages": [
+              "adapters/overview",
+              "adapters/implementing-an-adapter",
+              "adapters/built-in-adapters",
+              "adapters/publishing"
+            ]
+          },
+          {
+            "group": "Agent Integration",
+            "pages": [
+              "agents/overview",
+              "agents/direct-api",
+              "agents/sdk-javascript",
+              "agents/sdk-python",
+              "agents/mcp-server"
+            ]
+          },
+          {
+            "group": "Security & Policies",
+            "pages": [
+              "security/overview",
+              "security/access-policies",
+              "security/known-gaps"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/transport-plugins",
+              "advanced/cloud-registry",
+              "advanced/protocol-v1"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Agent Endpoints",
+            "pages": [
+              "api-reference/discovery",
+              "api-reference/sessions",
+              "api-reference/execution"
+            ]
+          },
+          {
+            "group": "Provider Endpoints",
+            "pages": [
+              "api-reference/provider-nodes",
+              "api-reference/websocket"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Standardized REST API for discovering, reserving, and executing hardware capabilities",
+    "Pluggable adapter system supporting cameras, SDRs, Android phones, Arduino, and custom hardware",
+    "Session-based exclusive device access with per-device access policies",
+    "Cloud Registry for global hardware discovery and agent-to-node relay",
+    "MCP server integration for LLM-native agents (Claude, LangChain, Cursor)",
+    "Official JavaScript/TypeScript and Python SDKs",
+    "Interactive CLI with setup wizard, TUI config editor, and adapter scaffolding",
+    "Docker-based deployment for hardware sandboxing and isolation"
+  ],
+  "publicApiSurface": [
+    "GET /v1/capabilities — Discover available hardware devices",
+    "POST /v1/requests — Reserve a hardware session",
+    "POST /v1/sessions/{session_id}/execute — Execute a capability",
+    "POST /v1/sessions/{session_id}/execute-batch — Batch execute capabilities",
+    "POST /v1/sessions/{session_id}/stop — Release a session",
+    "POST /v1/provider/nodes/register — Register/heartbeat a hardware node",
+    "GET /v1/provider/nodes/{id}/poll — Long-poll for pending commands",
+    "POST /v1/provider/nodes/results — Submit execution result",
+    "OahlClient — TypeScript/JS SDK for local node interaction",
+    "CloudClient — TypeScript/JS SDK for cloud relay interaction",
+    "oahl init — Interactive node setup wizard",
+    "oahl start — Start local OAHL node daemon",
+    "oahl scan-ports — Scan connected USB/serial devices",
+    "oahl tui — Terminal UI for config management",
+    "oahl create-adapter — Scaffold a new hardware adapter",
+    "oahl mcp — Start MCP server for LLM agent integration",
+    "oahl conformance — Run adapter conformance checks",
+    "Adapter interface: initialize(), healthCheck(), getDevices(), getCapabilities(), execute()"
+  ]
+}
